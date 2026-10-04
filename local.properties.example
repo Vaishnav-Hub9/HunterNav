@@ -1,0 +1,19 @@
+# Copy to local.properties (already used by Gradle for sdk.dir) and adjust.
+# NEVER commit real secrets; endpoints here are public development endpoints.
+
+# OSRM routing endpoint (development default = public demo server, NOT for production volume)
+osrm.baseUrl=https://router.project-osrm.org/
+
+# Geocoder endpoint (Nominatim, low-volume development use)
+geocoder.baseUrl=https://nominatim.openstreetmap.org/
+
+# Map style (OpenFreeMap Liberty — bright, no API key)
+map.styleUrl=https://tiles.openfreemap.org/styles/liberty
+
+# Default camera (Hyderabad)
+default.latitude=17.3850
+default.longitude=78.4867
+default.zoom=12.5
+
+# Developer demo switch compiled into the app
+demo.enabled=true

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">HunterNav</string>
+    <!-- OpenStreetMap attribution is REQUIRED and must stay user-visible (see README). -->
+    <string name="osm_attribution">Map data © OpenStreetMap contributors</string>
+</resources>
