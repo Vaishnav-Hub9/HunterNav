@@ -37,13 +37,12 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.viewmodel.compose.viewModel
+import com.hunternav.ui.rememberAppViewModel
 import com.hunternav.core.util.FormatUtils
 import com.hunternav.di.AppContainer
 import com.hunternav.domain.model.CameraMode
 import com.hunternav.domain.model.LocationData
 import com.hunternav.ui.AppViewModel
-import com.hunternav.ui.AppViewModelFactory
 import com.hunternav.ui.components.ManeuverIcon
 import com.hunternav.ui.components.PillChip
 import com.hunternav.ui.components.StatusRibbon
@@ -66,7 +65,7 @@ fun NavigationScreen(
     onExit: () -> Unit,
 ) {
     val context = LocalContext.current
-    val viewModel: AppViewModel = viewModel(factory = AppViewModelFactory(container))
+    val viewModel: AppViewModel = rememberAppViewModel(container)
 
     val navState by viewModel.engine.state.collectAsState()
     val phase by viewModel.phase.collectAsState()

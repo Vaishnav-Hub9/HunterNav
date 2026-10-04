@@ -43,11 +43,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.viewmodel.compose.viewModel
+import com.hunternav.ui.rememberAppViewModel
 import com.hunternav.di.AppContainer
 import com.hunternav.domain.model.Destination
 import com.hunternav.ui.AppViewModel
-import com.hunternav.ui.AppViewModelFactory
 import com.hunternav.ui.theme.Cobalt
 import com.hunternav.ui.theme.InkSecondary
 import com.hunternav.ui.theme.Ivory
@@ -73,7 +72,7 @@ fun SearchScreen(
     onDestinationConfirmed: (Destination) -> Unit,
     onBack: () -> Unit,
 ) {
-    val viewModel: AppViewModel = viewModel(factory = AppViewModelFactory(container))
+    val viewModel: AppViewModel = rememberAppViewModel(container)
     val state = remember { SearchState() }
 
     // Debounced search (spec: debounce search, cancel stale requests).

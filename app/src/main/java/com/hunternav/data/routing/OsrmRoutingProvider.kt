@@ -3,6 +3,7 @@ package com.hunternav.data.routing
 import com.hunternav.core.result.AppErrorKind
 import com.hunternav.core.result.AppResult
 import com.hunternav.core.result.toAppErrorKind
+import com.hunternav.core.util.DebugLog
 import com.hunternav.data.network.NetworkClient
 import com.hunternav.domain.model.Coordinate
 import com.hunternav.domain.model.Route
@@ -48,22 +49,47 @@ class OsrmRoutingProvider(
             .get()
             .build()
 
+        DebugLog.d(
+            "ROUTE_REQUEST",
+            "origin=${origin.latitude},${origin.longitude} " +
+                "destination=${destination.latitude},${destination.longitude} " +
+                "alternatives=$alternatives url=$url",
+        )
+
         return try {
             networkClient.execute(request).use { response ->
                 if (!response.isSuccessful) {
+                    DebugLog.d("ROUTE_RESPONSE", "failed http=${response.code}")
                     AppResult.Failure(AppErrorKind.SERVER, "HTTP ${response.code}")
                 } else {
                     val body = response.body.string()
-                    if (body.isBlank()) {
+                    val outcome = if (body.isBlank()) {
                         AppResult.Failure(AppErrorKind.PARSE, "Empty response body")
                     } else {
                         parse(body)
                     }
+                    DebugLog.d(
+                        "ROUTE_RESPONSE",
+                        if (outcome is AppResult.Success) {
+                            "ok routes=${outcome.value.size} " +
+                                "distance_m=${outcome.value.firstOrNull()?.distanceMeters} " +
+                                "duration_s=${outcome.value.firstOrNull()?.durationSeconds} " +
+                                "summary=${outcome.value.firstOrNull()?.summaryRoadName ?: "null"}"
+                        } else {
+                            val f = outcome as AppResult.Failure
+                            "failed kind=${f.kind} message=${f.message}"
+                        },
+                    )
+                    outcome
                 }
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
+            DebugLog.d(
+                "ROUTE_RESPONSE",
+                "exception=${e::class.simpleName} message=${e.message}",
+            )
             AppResult.Failure(e.toAppErrorKind(), e.message, e)
         }
     }

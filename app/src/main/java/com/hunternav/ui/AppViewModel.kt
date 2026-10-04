@@ -1,8 +1,16 @@
 package com.hunternav.ui
 
+import android.content.Context
+import android.content.ContextWrapper
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.hunternav.core.util.DebugLog
 import com.hunternav.di.AppContainer
 import com.hunternav.domain.model.CameraMode
 import com.hunternav.domain.model.Coordinate
@@ -65,6 +73,9 @@ class AppViewModel(
 
     /** Location provider currently in use (real GPS or demo simulator). */
     val locationProvider: LocationProvider get() = if (_demoMode.value) container.fakeLocationProvider else container.realLocationProvider
+
+    /** Identifies this ViewModel instance in traces — there must be exactly one shared instance. */
+    private val vmTag: String = Integer.toHexString(System.identityHashCode(this))
 
     private var routeJob: Job? = null
     private var locationStartJob: Job? = null
@@ -140,6 +151,14 @@ class AppViewModel(
     // ---------------------------------------------------------------------
 
     fun onDestinationSelected(destination: Destination) {
+        DebugLog.d(
+            "DESTINATION_SELECTED",
+            "vm=$vmTag title=${destination.title} subtitle=${destination.subtitle}",
+        )
+        DebugLog.d(
+            "DESTINATION_COORDINATES",
+            "vm=$vmTag lat=${destination.coordinate.latitude} lon=${destination.coordinate.longitude}",
+        )
         _destination.value = destination
     }
 
@@ -149,6 +168,14 @@ class AppViewModel(
             coordinate = coordinate,
             title = "Dropped pin",
             subtitle = "%.5f, %.5f".format(coordinate.latitude, coordinate.longitude),
+        )
+        DebugLog.d(
+            "DESTINATION_SELECTED",
+            "vm=$vmTag source=map_long_press title=${fallback.title}",
+        )
+        DebugLog.d(
+            "DESTINATION_COORDINATES",
+            "vm=$vmTag lat=${coordinate.latitude} lon=${coordinate.longitude}",
         )
         _destination.value = fallback
         viewModelScope.launch {
@@ -167,7 +194,12 @@ class AppViewModel(
 
     /** Fetches routes from the current location to the chosen destination. */
     fun prepareRoute() {
-        val dest = _destination.value ?: return
+        val dest = _destination.value
+        if (dest == null) {
+            // Was a silent `return`, which left Route Preview showing "—" with no explanation.
+            _routeError.value = "Destination lookup failed. Choose a destination and try again."
+            return
+        }
         val origin = engine.state.value.currentLocation?.coordinate
         if (origin == null) {
             // No GPS fix yet (permission denied / GPS off): explain instead of routing nonsense.
@@ -289,4 +321,31 @@ class AppViewModel(
 class AppViewModelFactory(private val container: AppContainer) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T = AppViewModel(container) as T
+}
+
+/**
+ * Returns the single trip-scoped [AppViewModel] shared by every screen.
+ *
+ * NavHost overrides `LocalViewModelStoreOwner` with the destination's `NavBackStackEntry`
+ * (see `NavBackStackEntryProvider.LocalOwnersProvider`), so a plain `viewModel(factory = ...)`
+ * inside a destination composable creates a **separate** AppViewModel per screen. The
+ * destination chosen on Home/Search was then written to one instance while Route Preview
+ * read another, which rendered "—" with no routes and a disabled Start button.
+ *
+ * Scoping to the Activity keeps one instance for the whole trip.
+ */
+@Composable
+fun rememberAppViewModel(container: AppContainer): AppViewModel {
+    val context = LocalContext.current
+    val owner = context.unwrapToViewModelStoreOwner()
+        ?: checkNotNull(LocalViewModelStoreOwner.current) {
+            "No ViewModelStoreOwner available for the shared AppViewModel"
+        }
+    return viewModel(viewModelStoreOwner = owner, factory = AppViewModelFactory(container))
+}
+
+private fun Context.unwrapToViewModelStoreOwner(): ViewModelStoreOwner? {
+    if (this is ViewModelStoreOwner) return this
+    val base = (this as? ContextWrapper)?.baseContext ?: return null
+    return base.unwrapToViewModelStoreOwner()
 }

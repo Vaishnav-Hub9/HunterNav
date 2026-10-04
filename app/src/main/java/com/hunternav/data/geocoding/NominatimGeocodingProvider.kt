@@ -3,6 +3,7 @@ package com.hunternav.data.geocoding
 import com.hunternav.core.result.AppErrorKind
 import com.hunternav.core.result.AppResult
 import com.hunternav.core.result.toAppErrorKind
+import com.hunternav.core.util.DebugLog
 import com.hunternav.data.network.NetworkClient
 import com.hunternav.domain.model.Coordinate
 import com.hunternav.domain.model.Destination
@@ -53,22 +54,45 @@ class NominatimGeocodingProvider(
             .get()
             .build()
 
+        DebugLog.d(
+            "GEOCODING_REQUEST",
+            "source=search query=\"$query\" " +
+                "near=${near?.let { "${it.latitude},${it.longitude}" } ?: "none"} limit=$limit",
+        )
+
         return try {
             networkClient.execute(request).use { response ->
                 if (!response.isSuccessful) {
+                    DebugLog.d("GEOCODING_RESULT", "source=search failed http=${response.code}")
                     AppResult.Failure(AppErrorKind.SERVER, "HTTP ${response.code}")
                 } else {
                     val body = response.body.string()
                     if (body.isBlank()) {
+                        DebugLog.d("GEOCODING_RESULT", "source=search failed reason=empty_body")
                         AppResult.Failure(AppErrorKind.PARSE, "Empty response body")
                     } else {
-                        parseSearch(body)
+                        parseSearch(body).also { r ->
+                            DebugLog.d(
+                                "GEOCODING_RESULT",
+                                if (r is AppResult.Success) {
+                                    "source=search ok count=${r.value.size} " +
+                                        "titles=${r.value.take(3).joinToString(" | ") { it.title }}"
+                                } else {
+                                    val f = r as AppResult.Failure
+                                    "source=search failed kind=${f.kind} message=${f.message}"
+                                },
+                            )
+                        }
                     }
                 }
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
+            DebugLog.d(
+                "GEOCODING_RESULT",
+                "source=search exception=${e::class.simpleName} message=${e.message}",
+            )
             AppResult.Failure(e.toAppErrorKind(), e.message, e)
         }
     }
@@ -88,22 +112,44 @@ class NominatimGeocodingProvider(
             .get()
             .build()
 
+        DebugLog.d(
+            "GEOCODING_REQUEST",
+            "source=reverse lat=${coordinate.latitude} lon=${coordinate.longitude}",
+        )
+
         return try {
             networkClient.execute(request).use { response ->
                 if (!response.isSuccessful) {
+                    DebugLog.d("GEOCODING_RESULT", "source=reverse failed http=${response.code}")
                     AppResult.Failure(AppErrorKind.SERVER, "HTTP ${response.code}")
                 } else {
                     val body = response.body.string()
                     if (body.isBlank()) {
+                        DebugLog.d("GEOCODING_RESULT", "source=reverse failed reason=empty_body")
                         AppResult.Failure(AppErrorKind.PARSE, "Empty response body")
                     } else {
-                        parseReverse(body, coordinate)
+                        parseReverse(body, coordinate).also { r ->
+                            DebugLog.d(
+                                "GEOCODING_RESULT",
+                                if (r is AppResult.Success) {
+                                    "source=reverse ok title=${r.value.title} " +
+                                        "coords=${r.value.coordinate.latitude},${r.value.coordinate.longitude}"
+                                } else {
+                                    val f = r as AppResult.Failure
+                                    "source=reverse failed kind=${f.kind} message=${f.message}"
+                                },
+                            )
+                        }
                     }
                 }
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
+            DebugLog.d(
+                "GEOCODING_RESULT",
+                "source=reverse exception=${e::class.simpleName} message=${e.message}",
+            )
             AppResult.Failure(e.toAppErrorKind(), e.message, e)
         }
     }

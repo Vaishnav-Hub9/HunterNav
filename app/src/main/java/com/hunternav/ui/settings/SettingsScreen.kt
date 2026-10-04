@@ -34,11 +34,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.viewmodel.compose.viewModel
+import com.hunternav.ui.rememberAppViewModel
 import com.hunternav.BuildConfig
 import com.hunternav.di.AppContainer
 import com.hunternav.ui.AppViewModel
-import com.hunternav.ui.AppViewModelFactory
 import com.hunternav.ui.components.PillChip
 import com.hunternav.ui.theme.Cobalt
 import com.hunternav.ui.theme.InkSecondary
@@ -50,7 +49,7 @@ fun SettingsScreen(
     container: AppContainer,
     onBack: () -> Unit,
 ) {
-    val viewModel: AppViewModel = viewModel(factory = AppViewModelFactory(container))
+    val viewModel: AppViewModel = rememberAppViewModel(container)
     val demoMode by viewModel.demoMode.collectAsState()
 
     var units by remember { mutableStateOf("km") }

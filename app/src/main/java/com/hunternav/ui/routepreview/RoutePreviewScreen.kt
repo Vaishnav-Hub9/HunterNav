@@ -37,17 +37,18 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.viewmodel.compose.viewModel
+import com.hunternav.core.util.DebugLog
 import com.hunternav.core.util.FormatUtils
 import com.hunternav.di.AppContainer
 import com.hunternav.ui.AppViewModel
-import com.hunternav.ui.AppViewModelFactory
 import com.hunternav.ui.components.PrimaryActionButton
 import com.hunternav.ui.map.HunterNavMapView
 import com.hunternav.ui.map.MapController
+import com.hunternav.ui.rememberAppViewModel
 import com.hunternav.ui.theme.Cobalt
 import com.hunternav.ui.theme.InkSecondary
 import com.hunternav.ui.theme.IvoryElevated
+import kotlinx.coroutines.flow.combine
 
 /** Route preview: map + route + metrics + alternatives + Start Navigation. */
 @Composable
@@ -57,7 +58,7 @@ fun RoutePreviewScreen(
     onStartNavigation: () -> Unit,
 ) {
     val context = LocalContext.current
-    val viewModel: AppViewModel = viewModel(factory = AppViewModelFactory(container))
+    val viewModel: AppViewModel = rememberAppViewModel(container)
 
     val destination by viewModel.destination.collectAsState()
     val routes by viewModel.routes.collectAsState()
@@ -66,10 +67,33 @@ fun RoutePreviewScreen(
     val error by viewModel.routeError.collectAsState()
 
     var mapController by remember { mutableStateOf<MapController?>(null) }
+    var routeAttempted by remember { mutableStateOf(false) }
 
     // Fetch if arriving without routes (e.g. process recreation).
+    // Always attempt, even with no destination, so the failure is shown instead of a silent "—".
     LaunchedEffect(Unit) {
-        if (routes.isEmpty() && viewModel.destination.value != null) viewModel.prepareRoute()
+        if (routes.isEmpty()) viewModel.prepareRoute()
+        routeAttempted = true
+    }
+
+    // Temporary trace of exactly what Route Preview is rendering (see core/util/DebugLog.kt).
+    LaunchedEffect(viewModel) {
+        combine(
+            viewModel.destination,
+            viewModel.routes,
+            viewModel.selectedRoute,
+            viewModel.isLoadingRoutes,
+            viewModel.routeError,
+        ) { dest, routeList, selected, isLoading, routeError ->
+            DebugLog.d(
+                "ROUTE_PREVIEW_STATE",
+                "vm=${Integer.toHexString(System.identityHashCode(viewModel))} " +
+                    "destination=${dest?.title ?: "null"} " +
+                    "coordinates=${dest?.let { "${it.coordinate.latitude},${it.coordinate.longitude}" } ?: "null"} " +
+                    "routes=${routeList.size} selected=${selected != null} " +
+                    "loading=$isLoading error=${routeError ?: "null"}",
+            )
+        }.collect { /* logged by the combiner above */ }
     }
 
     // Draw route + destination when data arrives.
@@ -227,8 +251,20 @@ fun RoutePreviewScreen(
                         horizontalArrangement = Arrangement.Center,
                     ) { CircularProgressIndicator(color = Cobalt) }
 
+                    destination == null -> Text(
+                        "Destination lookup failed",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+
                     error != null -> Text(
                         error!!,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+
+                    routeAttempted && routes.isEmpty() -> Text(
+                        "Route calculation failed. Check your connection and try again.",
                         color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodyMedium,
                     )

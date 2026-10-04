@@ -41,13 +41,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.viewmodel.compose.viewModel
+import com.hunternav.ui.rememberAppViewModel
 import com.hunternav.BuildConfig
 import com.hunternav.di.AppContainer
 import com.hunternav.domain.model.Coordinate
 import com.hunternav.domain.model.Destination
 import com.hunternav.ui.AppViewModel
-import com.hunternav.ui.AppViewModelFactory
 import com.hunternav.ui.components.HunterLogo
 import com.hunternav.ui.components.PrimaryActionButton
 import com.hunternav.ui.map.HunterNavMapView
@@ -77,7 +76,7 @@ fun HomeScreen(
     onStartNavigation: () -> Unit,
 ) {
     val context = LocalContext.current
-    val viewModel: AppViewModel = viewModel(factory = AppViewModelFactory(container))
+    val viewModel: AppViewModel = rememberAppViewModel(container)
 
     val destination by viewModel.destination.collectAsState()
     val locationStatus by viewModel.locationStatus.collectAsState()
