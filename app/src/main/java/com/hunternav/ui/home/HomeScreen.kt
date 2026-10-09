@@ -289,7 +289,9 @@ fun HomeScreen(
                     text = "Start Navigation",
                     enabled = destination != null,
                     onClick = {
-                        viewModel.prepareRoute()
+                        // Reuses routes already fetched for this destination; fetches when
+                        // there are none (destination changes always discard stale routes).
+                        viewModel.ensureRoute()
                         onDestinationPicked()
                     },
                 )

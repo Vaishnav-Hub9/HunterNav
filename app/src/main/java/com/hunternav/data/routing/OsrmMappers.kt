@@ -47,15 +47,11 @@ object OsrmMappers {
     }
 
     fun toCoordinate(lonLat: List<Double>): Coordinate {
-        // Defensive against providers emitting [lat, lon].
-        val first = lonLat.getOrNull(0) ?: 0.0
-        val second = lonLat.getOrNull(1) ?: 0.0
-        return if (first in -180.0..180.0 && second in -90.0..90.0 && first > 90.0 || second > 90.0) {
-            // Longitude first is the GeoJSON standard; only flip when clearly [lat, lon].
-            Coordinate(second, first)
-        } else {
-            Coordinate(second, first)
-        }
+        // GeoJSON/OSRM order is [lon, lat]; domain Coordinate is (latitude, longitude).
+        // (Hyderabad-area longitudes ~78 exceed no bound; every input we accept is GeoJSON.)
+        val lon = lonLat.getOrNull(0) ?: 0.0
+        val lat = lonLat.getOrNull(1) ?: 0.0
+        return Coordinate(lat, lon)
     }
 
     fun toRoute(dto: OsrmRouteDto): Route {

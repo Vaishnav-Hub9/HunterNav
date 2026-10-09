@@ -71,10 +71,11 @@ fun RoutePreviewScreen(
     var routeAttempted by remember { mutableStateOf(false) }
     var mapError by remember { mutableStateOf<String?>(null) }
 
-    // Fetch if arriving without routes (e.g. process recreation).
-    // Always attempt, even with no destination, so the failure is shown instead of a silent "—".
-    LaunchedEffect(Unit) {
-        if (routes.isEmpty()) viewModel.prepareRoute()
+    // Fetch on entry and whenever the destination changes; skip only when this exact
+    // destination already has routes. Prevents both stale-route reuse across destinations
+    // and re-fetch loops when returning to the preview.
+    LaunchedEffect(destination) {
+        viewModel.ensureRoute()
         routeAttempted = true
     }
 

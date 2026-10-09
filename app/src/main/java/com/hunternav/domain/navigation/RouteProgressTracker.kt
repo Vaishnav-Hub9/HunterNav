@@ -29,6 +29,7 @@ class RouteProgressTracker {
         location: LocationData,
         stepEndIndices: List<Int> = emptyList(),
         steps: List<RouteStep> = emptyList(),
+        totalDurationSeconds: Double? = null,
     ): SnapResult {
         require(geometry.isNotEmpty()) { "Route geometry must not be empty" }
 
@@ -84,19 +85,48 @@ class RouteProgressTracker {
             bestRemainingMeters = 0.0
         }
 
+        // Exact-vertex tie: a projection landing on the END of segment i means the rider sits
+        // ON vertex i+1 — index it as such (segment loop keeps the earlier segment on equal
+        // distance), otherwise step advancement and distance-to-maneuver lag by one vertex.
+        if (bestIndex + 1 < geometry.size) {
+            val next = geometry[bestIndex + 1]
+            if (distanceMeters(bestSnapLat, bestSnapLon, next.latitude, next.longitude) < VERTEX_TIE_EPSILON_METERS) {
+                bestIndex += 1
+            }
+        }
+
         lastGeometryIndex = bestIndex
 
-        val remainingDuration = if (steps.isNotEmpty() && stepEndIndices.isNotEmpty()) {
-            val stepIdx = stepIndexForGeometryIndex(stepEndIndices, bestIndex, steps.size)
-            var dur = 0.0
-            for (k in stepIdx until steps.size) dur += steps[k].durationSeconds
-            dur
-        } else if (bestRemainingMeters > 0 && steps.isNotEmpty()) {
-            // Proportional fallback when step indices are unavailable.
-            val totalLen = approximateLength(geometry)
-            val ratio = (bestRemainingMeters / totalLen).coerceIn(0.0, 1.0)
-            steps.sumOf { it.durationSeconds } * ratio
-        } else 0.0
+        // Remaining duration model (documented assumption): the current step's duration is
+        // scaled by the fraction of that step still to travel, plus the full duration of every
+        // later step — so duration decreases continuously with progress, matches OSRM's
+        // per-step speeds, and is recomputed from scratch after a reroute. When step boundaries
+        // are unavailable we fall back to a uniform-speed proportional estimate over the route.
+        val remainingDuration = if (steps.isNotEmpty()) {
+            val totalDuration = steps.sumOf { it.durationSeconds }
+            if (stepEndIndices.isNotEmpty()) {
+                // Step i spans [boundary(i), boundary(i+1)); the rider's current step is the
+                // last one already started. Boundary = START vertex of that step.
+                val stepIdx = stepIndexForGeometryIndex(stepEndIndices, bestIndex, steps.size)
+                val endVertex = stepEndIndices.getOrElse(stepIdx + 1) { geometry.size - 1 }
+                    .coerceIn(bestIndex, geometry.size - 1)
+                val startVertex = stepEndIndices.getOrElse(stepIdx) { 0 }.coerceAtLeast(0).coerceIn(0, endVertex)
+                val stepLength = forwardDistance(geometry, startVertex, endVertex).coerceAtLeast(1.0)
+                val leftInStep = forwardDistance(geometry, bestIndex, endVertex)
+                val fractionLeft = (leftInStep / stepLength).coerceIn(0.0, 1.0)
+                var dur = steps[stepIdx].durationSeconds * fractionLeft
+                for (k in stepIdx + 1 until steps.size) dur += steps[k].durationSeconds
+                dur.coerceIn(0.0, totalDuration)
+            } else {
+                // Uniform average speed along the route.
+                val ratio = (bestRemainingMeters / approximateLength(geometry)).coerceIn(0.0, 1.0)
+                totalDuration * ratio
+            }
+        } else {
+            // No step data: fall back to the route's own duration at uniform speed.
+            val ratio = (bestRemainingMeters / approximateLength(geometry)).coerceIn(0.0, 1.0)
+            (totalDurationSeconds ?: 0.0) * ratio
+        }
 
         return SnapResult(
             snapped = Coordinate(bestSnapLat, bestSnapLon),
@@ -136,11 +166,27 @@ class RouteProgressTracker {
     }
 
     private fun stepIndexForGeometryIndex(stepEndIndices: List<Int>, geometryIndex: Int, stepCount: Int): Int {
-        // First step whose end lies at/after the snapped vertex.
+        // Current step = the last step whose start (boundary) is at/before the snapped vertex;
+        // mirrors NavigationEngine.stepIndexForGeometryIndex.
+        var current = 0
         for (i in stepEndIndices.indices) {
-            if (geometryIndex <= stepEndIndices[i]) return i.coerceAtMost(stepCount - 1)
+            if (stepEndIndices[i] <= geometryIndex) current = i
         }
-        return stepCount - 1
+        return current.coerceAtMost((stepCount - 1).coerceAtLeast(0))
+    }
+
+    private fun forwardDistance(geometry: List<Coordinate>, fromIndex: Int, toIndex: Int): Double {
+        var sum = 0.0
+        var i = fromIndex.coerceAtLeast(0)
+        val end = toIndex.coerceAtMost(geometry.size - 1)
+        while (i < end) {
+            sum += distanceMeters(
+                geometry[i].latitude, geometry[i].longitude,
+                geometry[i + 1].latitude, geometry[i + 1].longitude,
+            )
+            i++
+        }
+        return sum
     }
 
     private fun approximateLength(geometry: List<Coordinate>): Double {
@@ -165,6 +211,9 @@ class RouteProgressTracker {
     companion object {
         /** Local search window around the previous snap (vertices). */
         private const val SEARCH_WINDOW = 60
+
+        /** Below this distance a snapped point counts as sitting on the next vertex. */
+        private const val VERTEX_TIE_EPSILON_METERS = 0.01
     }
 
     private var lastGeometryIndex = 0

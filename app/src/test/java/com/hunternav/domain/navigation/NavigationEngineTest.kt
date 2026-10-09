@@ -3,8 +3,11 @@ package com.hunternav.domain.navigation
 import com.hunternav.core.result.AppResult
 import com.hunternav.domain.model.Coordinate
 import com.hunternav.domain.model.LocationData
+import com.hunternav.domain.model.Maneuver
+import com.hunternav.domain.model.ManeuverType
 import com.hunternav.domain.model.Route
 import com.hunternav.domain.model.RouteLeg
+import com.hunternav.domain.model.RouteStep
 import com.hunternav.domain.repository.RoutingProvider
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -298,6 +301,183 @@ class NavigationEngineTest {
         now = 8_000
         engine.onLocationUpdate(fix(17.3863, 78.4867, now))
         assertFalse(engine.state.value.offRoute)
+    }
+
+    // -----------------------------------------------------------------
+    // Turn-by-turn step advancement + live metrics (spec: fix turn-by-turn/metrics)
+    // -----------------------------------------------------------------
+
+    /**
+     * 3-step route over 6 vertices spaced ~100 m apart: START at v0, LEFT at v2,
+     * ARRIVE at v5. [prepend] shifts everything by one vertex (used to put a rerouted
+     * rider at the head of the replacement route).
+     */
+    private fun steppedRoute(
+        durations: List<Double> = listOf(20.0, 30.0, 0.0),
+        prepend: Coordinate? = null,
+    ): Route {
+        val base = (0..5).map { Coordinate(17.3850 + it * 0.0009, 78.4867) }
+        val geometry = listOfNotNull(prepend) + base
+        val offset = if (prepend != null) 1 else 0
+        fun vertex(i: Int): Coordinate = geometry[i + offset]
+        val steps = listOf(
+            RouteStep(
+                coordinate = vertex(0),
+                maneuver = Maneuver(ManeuverType.START, vertex(0)),
+                distanceMeters = 200.0,
+                durationSeconds = durations[0],
+                roadName = "Road A",
+            ),
+            RouteStep(
+                coordinate = vertex(2),
+                maneuver = Maneuver(ManeuverType.LEFT, vertex(2)),
+                distanceMeters = 300.0,
+                durationSeconds = durations[1],
+                roadName = "Road B",
+            ),
+            RouteStep(
+                coordinate = vertex(5),
+                maneuver = Maneuver(ManeuverType.ARRIVE, vertex(5)),
+                distanceMeters = 0.0,
+                durationSeconds = durations[2],
+                roadName = null,
+            ),
+        )
+        val total = durations.sum()
+        return Route(
+            distanceMeters = 500.0,
+            durationSeconds = total,
+            geometry = geometry,
+            legs = listOf(RouteLeg(distanceMeters = 500.0, durationSeconds = total, steps = steps)),
+        )
+    }
+
+    @Test
+    fun `maneuver instruction and metrics advance with position along the route`() = runTest {
+        val routing = FakeRoutingProvider(steppedRoute())
+        var now = 0L
+        val engine = engine(routing, { now })
+        val route = steppedRoute()
+
+        // Start of the route: departing step active, LEFT ~200 m ahead, full metrics.
+        engine.startNavigation(route, fix(17.3850, 78.4867, 0))
+        var s = engine.state.value
+        assertEquals(ManeuverType.START, s.currentStep?.maneuver?.type)
+        assertEquals("Road A", s.currentStep?.roadName)
+        assertEquals(ManeuverType.LEFT, s.nextStep?.maneuver?.type)
+        assertEquals(200.0, s.distanceToNextManeuver, 15.0)
+        assertEquals(500.0, s.remainingDistance, 15.0)
+        assertEquals(50.0, s.remainingDuration, 4.0)
+
+        // Halfway to the first turn: SAME instruction ahead, distance/duration decreased.
+        now = 1_000
+        engine.onLocationUpdate(fix(17.3859, 78.4867, now))
+        s = engine.state.value
+        assertEquals(ManeuverType.START, s.currentStep?.maneuver?.type)
+        assertEquals(ManeuverType.LEFT, s.nextStep?.maneuver?.type)
+        assertEquals(100.0, s.distanceToNextManeuver, 12.0)
+        assertEquals(400.0, s.remainingDistance, 12.0)
+        // Step 0 has 10 of 20 s left + full step 1 (30 s) + 0 s arrival = 40 s.
+        assertEquals(40.0, s.remainingDuration, 4.0)
+
+        // Past the turn: LEFT is the CURRENT step, ARRIVE is next, ~200 m out.
+        now = 2_000
+        engine.onLocationUpdate(fix(17.3877, 78.4867, now))
+        s = engine.state.value
+        assertEquals(ManeuverType.LEFT, s.currentStep?.maneuver?.type)
+        assertEquals("Road B", s.currentStep?.roadName)
+        assertEquals(ManeuverType.ARRIVE, s.nextStep?.maneuver?.type)
+        assertEquals(200.0, s.distanceToNextManeuver, 12.0)
+        assertEquals(200.0, s.remainingDistance, 12.0)
+        // 2 of 3 segments of the 30 s step remain → 30 * 2/3 + 0 = 20 s.
+        assertEquals(20.0, s.remainingDuration, 4.0)
+    }
+
+    // -----------------------------------------------------------------
+    // Arrival vs the SELECTED destination (spec: verify destination changes)
+    // -----------------------------------------------------------------
+
+    @Test
+    fun `arrival is checked against the selected destination`() = runTest {
+        val routing = FakeRoutingProvider(baseRoute())
+        var now = 0L
+        val engine = engine(routing, { now })
+        val selected = Coordinate(17.3950, 78.4867) // ~667 m BEYOND the route's geometry end
+
+        engine.startNavigation(baseRoute(), fix(17.3850, 78.4867, 0), arrivalDestination = selected)
+
+        // On the route but far from both the selected destination and its end: not arrived.
+        now = 1_000
+        engine.onLocationUpdate(fix(17.3850, 78.4867, now))
+        assertFalse(engine.state.value.destinationReached)
+
+        // At the selected destination (nowhere near the route's geometry): arrival triggers.
+        now = 2_000
+        engine.onLocationUpdate(fix(17.3950, 78.4867, now))
+        assertTrue(engine.state.value.destinationReached)
+        assertEquals("arrival must not need a reroute", 0, routing.callCount)
+    }
+
+    @Test
+    fun `rerouting keeps the selected destination as the arrival target`() = runTest {
+        val routing = FakeRoutingProvider(baseRoute())
+        var now = 0L
+        val engine = engine(routing, { now })
+        val selected = Coordinate(17.3950, 78.4867)
+
+        engine.startNavigation(baseRoute(), fix(17.3850, 78.4867, 0), arrivalDestination = selected)
+
+        // Sustained deviation → exactly one reroute that replaces the route.
+        now = 1_000
+        engine.onLocationUpdate(fix(17.3855, 78.4877, now))
+        now = 3_000
+        engine.onLocationUpdate(fix(17.3857, 78.4879, now))
+        now = 6_000
+        engine.onLocationUpdate(fix(17.3860, 78.4881, now))
+        advanceUntilIdle()
+        assertEquals(1, routing.callCount)
+        assertFalse(engine.state.value.rerouting)
+
+        // After the reroute the arrival target is STILL the selected destination: reaching it
+        // completes the trip (it would NOT if the target had reverted to the geometry end).
+        now = 8_000
+        engine.onLocationUpdate(fix(17.3950, 78.4867, now))
+        assertTrue(engine.state.value.destinationReached)
+        assertEquals("arrival must not trigger another reroute", 1, routing.callCount)
+    }
+
+    @Test
+    fun `rerouting recomputes remaining metrics for the replacement route`() = runTest {
+        val routing = FakeRoutingProvider(baseRoute())
+        var now = 0L
+        val engine = engine(routing, { now })
+
+        // Replacement route: different step durations (500 s total) and a different head.
+        routing.nextRoute = steppedRoute(
+            durations = listOf(100.0, 400.0, 0.0),
+            prepend = Coordinate(17.3860, 78.4881),
+        )
+
+        engine.startNavigation(baseRoute(), fix(17.3850, 78.4867, 0))
+        val before = engine.state.value
+        assertEquals(90.0, before.remainingDuration, 5.0)
+
+        now = 1_000
+        engine.onLocationUpdate(fix(17.3855, 78.4877, now))
+        now = 3_000
+        engine.onLocationUpdate(fix(17.3857, 78.4879, now))
+        now = 6_000
+        engine.onLocationUpdate(fix(17.3860, 78.4881, now))
+        advanceUntilIdle()
+
+        assertEquals(1, routing.callCount)
+        val after = engine.state.value
+        assertEquals(routing.nextRoute, after.activeRoute)
+        // Metrics were rebuilt from the REPLACEMENT route, not carried over: rider is at its
+        // head, so remaining duration equals the new route's full 500 s of step time.
+        assertEquals(500.0, after.remainingDuration, 25.0)
+        assertTrue("remaining distance must reflect the new geometry", after.remainingDistance > 600.0)
+        assertTrue(after.remainingDistance < 760.0)
     }
 
     private fun TestScope.engine(routing: RoutingProvider, clock: () -> Long) = NavigationEngine(

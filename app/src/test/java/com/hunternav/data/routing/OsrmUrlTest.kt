@@ -1,6 +1,7 @@
 package com.hunternav.data.routing
 
 import com.hunternav.domain.model.Coordinate
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -57,5 +58,32 @@ class OsrmUrlTest {
 
         assertTrue(url.contains("alternatives=false"))
         assertTrue(url.contains("78.5229411,17.3735683;78.4747,17.3616"))
+    }
+
+    @Test
+    fun `three distinct destinations produce distinct route requests`() {
+        val charminar = Coordinate(latitude = 17.3616, longitude = 78.4747)
+        val vasavi = Coordinate(latitude = 17.3969, longitude = 78.3208)
+        val gachibowli = Coordinate(latitude = 17.4401, longitude = 78.3489)
+
+        val charminarUrl = provider.buildRouteUrl(origin, charminar, alternatives = true)
+        val vasaviUrl = provider.buildRouteUrl(origin, vasavi, alternatives = true)
+        val gachibowliUrl = provider.buildRouteUrl(origin, gachibowli, alternatives = true)
+
+        // Three destinations ⇒ three different request URLs.
+        assertEquals(3, setOf(charminarUrl, vasaviUrl, gachibowliUrl).size)
+
+        // Each request carries ITS destination pair and none of the others'.
+        assertTrue(charminarUrl.contains("78.5229411,17.3735683;78.4747,17.3616"))
+        assertFalse(charminarUrl.contains("78.3208,17.3969"))
+        assertFalse(charminarUrl.contains("78.3489,17.4401"))
+
+        assertTrue(vasaviUrl.contains("78.5229411,17.3735683;78.3208,17.3969"))
+        assertFalse(vasaviUrl.contains("78.4747,17.3616"))
+        assertFalse(vasaviUrl.contains("78.3489,17.4401"))
+
+        assertTrue(gachibowliUrl.contains("78.5229411,17.3735683;78.3489,17.4401"))
+        assertFalse(gachibowliUrl.contains("78.4747,17.3616"))
+        assertFalse(gachibowliUrl.contains("78.3208,17.3969"))
     }
 }

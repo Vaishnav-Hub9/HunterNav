@@ -11,7 +11,10 @@ import com.hunternav.domain.model.Route
 import com.hunternav.domain.model.RouteLeg
 import com.hunternav.domain.repository.GeocodingProvider
 import com.hunternav.domain.repository.RoutingProvider
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
@@ -19,6 +22,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -34,9 +38,10 @@ import org.junit.Test
  */
 class AppViewModelTest {
 
-    /** Fake router: counts calls, result swappable per test. */
+    /** Fake router: counts calls, records requested destinations, result swappable per test. */
     private class FakeRoutingProvider(var result: AppResult<List<Route>>) : RoutingProvider {
         var calls = 0
+        val requestedDestinations = mutableListOf<Coordinate>()
 
         override suspend fun getRoutes(
             origin: Coordinate,
@@ -44,7 +49,34 @@ class AppViewModelTest {
             alternatives: Boolean,
         ): AppResult<List<Route>> {
             calls++
+            requestedDestinations += destination
             return result
+        }
+    }
+
+    /**
+     * Router whose first request only completes after an explicit gate — and completes even if
+     * the requesting coroutine was cancelled meanwhile, exactly like a socket read that was
+     * already in flight when the user changed destination (stale-response scenario).
+     */
+    private class SlowFirstRequestRouter(
+        private val staleRoute: Route,
+        private val freshRoute: Route,
+    ) : RoutingProvider {
+        val requestedDestinations = mutableListOf<Coordinate>()
+        val firstRequestGate = CompletableDeferred<Unit>()
+
+        override suspend fun getRoutes(
+            origin: Coordinate,
+            destination: Coordinate,
+            alternatives: Boolean,
+        ): AppResult<List<Route>> {
+            requestedDestinations += destination
+            if (requestedDestinations.size == 1) {
+                withContext(NonCancellable) { firstRequestGate.await() }
+                return AppResult.Success(listOf(staleRoute))
+            }
+            return AppResult.Success(listOf(freshRoute))
         }
     }
 
@@ -94,7 +126,7 @@ class AppViewModelTest {
     )
 
     private fun container(
-        routing: FakeRoutingProvider = FakeRoutingProvider(AppResult.Success(listOf(route()))),
+        routing: RoutingProvider = FakeRoutingProvider(AppResult.Success(listOf(route()))),
         geocoder: GeocodingProvider = FakeGeocoder(),
     ) = AppContainer(ContextWrapper(null), routing, geocoder)
 
@@ -208,5 +240,74 @@ class AppViewModelTest {
         advanceUntilIdle()
 
         assertEquals(AppPhase.IDLE, vm.phase.value)
+    }
+
+    // -----------------------------------------------------------------
+    // Destination-specific routes + stale responses (spec: verify destination changes)
+    // -----------------------------------------------------------------
+
+    @Test
+    fun `three distinct destinations produce three distinct route requests`() = runTest {
+        val routing = FakeRoutingProvider(AppResult.Success(listOf(route())))
+        val vm = AppViewModel(container(routing = routing))
+        val destinations = listOf(
+            Destination(Coordinate(17.3616, 78.4747), title = "Charminar"),
+            Destination(Coordinate(17.3969, 78.3208), title = "Vasavi College of Engineering"),
+            Destination(Coordinate(17.4401, 78.3489), title = "Gachibowli"),
+        )
+        vm.engine.onLocationUpdate(location())
+
+        for (destination in destinations) {
+            vm.onDestinationSelected(destination)
+            // Selecting a different destination discards the previous trip's routes.
+            assertTrue("stale routes for ${destination.title}", vm.routes.value.isEmpty())
+            assertNull(vm.selectedRoute.value)
+            vm.ensureRoute()
+            advanceUntilIdle()
+        }
+
+        assertEquals(destinations.map { it.coordinate }, routing.requestedDestinations)
+        assertEquals("routes must come from the last fetch", 1, vm.routes.value.size)
+        assertEquals(destinations.last(), vm.destination.value)
+        assertNotNull(vm.selectedRoute.value)
+        assertNull(vm.routeError.value)
+    }
+
+    @Test
+    fun `changing destination during an in-flight request keeps the newer route`() = runTest {
+        val routing = SlowFirstRequestRouter(
+            staleRoute = route(distanceMeters = 1111.0),
+            freshRoute = route(distanceMeters = 2222.0),
+        )
+        val vm = AppViewModel(container(routing = routing))
+        val charminar = Destination(Coordinate(17.3616, 78.4747), title = "Charminar")
+        val gachibowli = Destination(Coordinate(17.4401, 78.3489), title = "Gachibowli")
+
+        vm.onDestinationSelected(charminar)
+        vm.engine.onLocationUpdate(location())
+        vm.prepareRoute()
+        advanceUntilIdle()
+        // First request is stuck in flight for Charminar.
+        assertEquals(listOf(charminar.coordinate), routing.requestedDestinations)
+        assertTrue(vm.isLoadingRoutes.value)
+        assertNull(vm.selectedRoute.value)
+
+        // Destination changes while request 1 is unresolved.
+        vm.onDestinationSelected(gachibowli)
+        vm.prepareRoute()
+        advanceUntilIdle()
+        assertEquals(listOf(charminar.coordinate, gachibowli.coordinate), routing.requestedDestinations)
+        assertEquals(gachibowli, vm.destination.value)
+        assertEquals(2222.0, vm.selectedRoute.value!!.distanceMeters, 0.01)
+        assertFalse(vm.isLoadingRoutes.value)
+
+        // The stale Charminar response arrives late — it must NOT overwrite Gachibowli's route.
+        routing.firstRequestGate.complete(Unit)
+        advanceUntilIdle()
+        assertEquals(gachibowli, vm.destination.value)
+        assertEquals(2222.0, vm.selectedRoute.value!!.distanceMeters, 0.01)
+        assertEquals(1, vm.routes.value.size)
+        assertFalse(vm.isLoadingRoutes.value)
+        assertNull(vm.routeError.value)
     }
 }

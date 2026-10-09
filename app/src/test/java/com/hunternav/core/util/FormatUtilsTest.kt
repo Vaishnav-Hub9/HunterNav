@@ -47,4 +47,18 @@ class FormatUtilsTest {
         val eta = FormatUtils.eta(1800.0, nowEpochMs = 0L)
         assertTrue(Regex("""\d{2}:\d{2}""").matches(eta))
     }
+
+    @Test
+    fun `eta equals now plus remaining duration`() {
+        val now = 1_700_000_000_000L
+        val remainingSeconds = 1500.0 // 25 minutes
+        val expected = java.util.Calendar.getInstance().apply {
+            timeInMillis = now + (remainingSeconds * 1000).toLong()
+        }
+        val expectedString = "%02d:%02d".format(
+            expected.get(java.util.Calendar.HOUR_OF_DAY),
+            expected.get(java.util.Calendar.MINUTE),
+        )
+        assertEquals(expectedString, FormatUtils.eta(remainingSeconds, now))
+    }
 }

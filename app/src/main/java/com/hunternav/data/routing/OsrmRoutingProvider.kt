@@ -130,12 +130,18 @@ class OsrmRoutingProvider(
             DebugLog.d("ROUTE_PARSE_FAILURE", "stage=routes reason=empty")
             return AppResult.Failure(AppErrorKind.NO_ROUTE, "No route found")
         }
+        // Geometry endpoints prove on-device that the returned route starts at the origin and
+        // ends at the selected destination (trace requirement: log endpoints per request).
+        val firstPoint = dto.routes.first().geometry?.coordinates?.firstOrNull()
+        val lastPoint = dto.routes.first().geometry?.coordinates?.lastOrNull()
         DebugLog.d(
             "ROUTE_PARSE_SUCCESS",
             "routes=${dto.routes.size} " +
                 "distance_m=${dto.routes.first().distance} " +
                 "duration_s=${dto.routes.first().duration} " +
-                "steps=${dto.routes.first().legs.sumOf { it.steps.size }}",
+                "steps=${dto.routes.first().legs.sumOf { it.steps.size }} " +
+                "first_pt=${firstPoint?.joinToString(",") ?: "n/a"} " +
+                "last_pt=${lastPoint?.joinToString(",") ?: "n/a"}",
         )
         return AppResult.Success(dto.routes.map { OsrmMappers.toRoute(it) })
     }

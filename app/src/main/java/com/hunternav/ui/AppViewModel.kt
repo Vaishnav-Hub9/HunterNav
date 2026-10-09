@@ -59,6 +59,9 @@ class AppViewModel(
     private val _routeError = MutableStateFlow<String?>(null)
     val routeError: StateFlow<String?> = _routeError.asStateFlow()
 
+    /** The destination the current [_routes] were fetched for (null = none). */
+    private val _routesForDestination = MutableStateFlow<Destination?>(null)
+
     private val _demoMode = MutableStateFlow(false)
     val demoMode: StateFlow<Boolean> = _demoMode.asStateFlow()
 
@@ -159,7 +162,31 @@ class AppViewModel(
             "DESTINATION_COORDINATES",
             "vm=$vmTag lat=${destination.coordinate.latitude} lon=${destination.coordinate.longitude}",
         )
+        setDestination(destination)
+    }
+
+    /**
+     * Swaps the trip destination. A *different* location discards every trace of the previous
+     * trip — fetched routes, the selected route, errors, the in-flight request and any active
+     * navigation — so a stale route can never be shown for the new destination (spec: changing
+     * destination must discard the previous active route and navigation steps).
+     */
+    private fun setDestination(destination: Destination) {
+        val previous = _destination.value
         _destination.value = destination
+        if (previous != null && previous.coordinate == destination.coordinate) return
+
+        routeJob?.cancel()
+        routeJob = null
+        _routes.value = emptyList()
+        _selectedRoute.value = null
+        _routeError.value = null
+        _routesForDestination.value = null
+        _isLoadingRoutes.value = false
+        if (_phase.value == AppPhase.NAVIGATING || _phase.value == AppPhase.ARRIVED) {
+            engine.stopNavigation()
+            _phase.value = AppPhase.IDLE
+        }
     }
 
     /** Long-press on map: pin immediately, upgrade the label if reverse geocoding succeeds. */
@@ -177,7 +204,7 @@ class AppViewModel(
             "DESTINATION_COORDINATES",
             "vm=$vmTag lat=${coordinate.latitude} lon=${coordinate.longitude}",
         )
-        _destination.value = fallback
+        setDestination(fallback)
         viewModelScope.launch {
             val result = container.searchDestination.reverse(coordinate)
             if (result is com.hunternav.core.result.AppResult.Success) {
@@ -211,11 +238,15 @@ class AppViewModel(
         _routeError.value = null
         routeJob = viewModelScope.launch {
             val result = container.calculateRoutes(origin, dest.coordinate, alternatives = true)
+            // Stale-response guard: a response for a destination the user has already
+            // changed must never overwrite the newer destination's route.
+            if (_destination.value != dest) return@launch
             _isLoadingRoutes.value = false
             when (result) {
                 is com.hunternav.core.result.AppResult.Success -> {
                     _routes.value = result.value
                     _selectedRoute.value = result.value.firstOrNull()
+                    _routesForDestination.value = dest
                 }
                 is com.hunternav.core.result.AppResult.Failure -> {
                     _routes.value = emptyList()
@@ -224,6 +255,17 @@ class AppViewModel(
                 }
             }
         }
+    }
+
+    /**
+     * Fetches routes for the current destination unless a successful result for that exact
+     * destination already exists — used by Route Preview so returning to it with the same
+     * destination keeps its routes while a *new* destination always refetches.
+     */
+    fun ensureRoute() {
+        val dest = _destination.value
+        if (dest != null && _routes.value.isNotEmpty() && _routesForDestination.value == dest) return
+        prepareRoute()
     }
 
     fun selectRoute(route: Route) {
@@ -246,7 +288,8 @@ class AppViewModel(
         locationUpdatesJob = viewModelScope.launch {
             locationProvider.updates.collect { engine.onLocationUpdate(it) }
         }
-        engine.startNavigation(route, initial)
+        // Arrival is evaluated against the selected destination, not merely the geometry end.
+        engine.startNavigation(route, initial, arrivalDestination = _destination.value?.coordinate)
         _phase.value = AppPhase.NAVIGATING
     }
 

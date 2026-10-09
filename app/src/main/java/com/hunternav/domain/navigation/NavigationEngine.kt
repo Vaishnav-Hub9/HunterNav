@@ -79,6 +79,13 @@ class NavigationEngine(
     private val tracker = RouteProgressTracker()
 
     private var destination: Coordinate? = null
+
+    /**
+     * Selected destination for the current trip (arrival target). Set once per trip via
+     * [startNavigation]'s `arrivalDestination` and preserved across reroutes so arrival is
+     * always checked against what the user actually chose — not merely a route's geometry end.
+     */
+    private var tripDestination: Coordinate? = null
     private var geometrySuffixMeters: DoubleArray = DoubleArray(0)
     private var stepEndIndices: List<Int> = emptyList()
 
@@ -96,7 +103,7 @@ class NavigationEngine(
 
     /** Begins navigating an already-fetched route. */
     @Synchronized
-    fun startNavigation(route: Route, initialLocation: LocationData?) {
+    fun startNavigation(route: Route, initialLocation: LocationData?, arrivalDestination: Coordinate? = null) {
         activeRerouteJob?.cancel()
         activeRerouteJob = null
         offRouteLatched = false
@@ -104,7 +111,8 @@ class NavigationEngine(
         offRouteCandidateOrigin = null
         arrivalLatched = false
 
-        destination = route.geometry.lastOrNull()
+        if (arrivalDestination != null) tripDestination = arrivalDestination
+        destination = tripDestination ?: route.geometry.lastOrNull()
         tracker.reset()
         geometrySuffixMeters = buildSuffixDistances(route.geometry)
         stepEndIndices = buildStepEndIndices(route)
@@ -128,6 +136,7 @@ class NavigationEngine(
         offRouteCandidateOrigin = null
         arrivalLatched = false
         destination = null
+        tripDestination = null
         lastRerouteRequestMs = null
         val previousRoute = _state.value.activeRoute
         _state.value = NavigationState.idle().copy(
@@ -159,16 +168,36 @@ class NavigationEngine(
             return
         }
 
-        val snap = tracker.snap(route.geometry, location, stepEndIndices, allSteps(route))
+        val snap = tracker.snap(
+            route.geometry,
+            location,
+            stepEndIndices,
+            allSteps(route),
+            totalDurationSeconds = route.durationSeconds,
+        )
         val stepIdx = stepIndexForGeometryIndex(snap.geometryIndex)
         val steps = allSteps(route)
         val currentStep = steps.getOrNull(stepIdx)
         val nextStep = steps.getOrNull(stepIdx + 1)
 
-        // Distance from snapped position to the end of the current step == next maneuver point.
-        val maneuverVertex = stepEndIndices.getOrNull(stepIdx) ?: -1
+        // The next maneuver sits at the START of the following step (step boundaries are
+        // maneuver/start vertices); for the final step it is the destination itself.
+        val maneuverVertex = when {
+            stepIdx + 1 < stepEndIndices.size -> stepEndIndices[stepIdx + 1]
+            steps.isNotEmpty() -> route.geometry.lastIndex
+            else -> -1
+        }
+        // Along-path distance from the actual snapped POINT to the maneuver vertex: the snap
+        // point can be mid-segment, so counting from the segment's start vertex would overstate
+        // the distance by up to one segment.
         val distanceToManeuver = if (maneuverVertex in geometrySuffixMeters.indices && maneuverVertex >= snap.geometryIndex) {
-            (geometrySuffixMeters[snap.geometryIndex] - geometrySuffixMeters[maneuverVertex]).coerceAtLeast(0.0)
+            val nextVertex = (snap.geometryIndex + 1).coerceAtMost(route.geometry.lastIndex)
+            val toNextVertex = distanceMeters(
+                snap.snapped.latitude, snap.snapped.longitude,
+                route.geometry[nextVertex].latitude, route.geometry[nextVertex].longitude,
+            )
+            (toNextVertex + geometrySuffixMeters[nextVertex] - geometrySuffixMeters[maneuverVertex])
+                .coerceAtLeast(0.0)
         } else 0.0
 
         val arrival = evaluateArrival(location, route)
@@ -203,9 +232,17 @@ class NavigationEngine(
     private fun evaluateArrival(location: LocationData, route: Route): Boolean {
         if (arrivalLatched) return true
         val dest = destination ?: return false
+        val radius = config.arrivalRadiusMeters + location.accuracy.coerceAtMost(30f).toDouble()
         val distance = distanceMeters(location.latitude, location.longitude, dest.latitude, dest.longitude)
-        // Accept the fix when close, tolerating GPS accuracy.
-        val arrived = distance <= config.arrivalRadiusMeters + location.accuracy.coerceAtMost(30f)
+        // Primary target: the destination the user selected (spec: arrival is checked against
+        // the actual selected destination). Secondary: the active route's own endpoint — OSRM
+        // snaps the destination onto the routable road network (real captures show 8–47 m
+        // offsets), and reaching that endpoint completes the trip this route was built for.
+        val reachedDestination = distance <= radius
+        val reachedRouteEnd = route.geometry.lastOrNull()?.let {
+            distanceMeters(location.latitude, location.longitude, it.latitude, it.longitude) <= radius
+        } ?: false
+        val arrived = reachedDestination || reachedRouteEnd
         if (arrived && !arrivalLatched) {
             arrivalLatched = true
             DebugLog.d(
@@ -344,15 +381,25 @@ class NavigationEngine(
 
     private fun allSteps(route: Route): List<com.hunternav.domain.model.RouteStep> = route.legs.flatMap { it.steps }
 
+    /**
+     * Current step = the step whose maneuver/start vertex is the last one at or before the
+     * rider's position. Mapping "first boundary at/after the position" (the previous logic)
+     * advanced the instruction one whole step too early — while approaching a turn the banner
+     * already showed the maneuver AFTER it. Steps span [start(i), start(i+1)).
+     */
     private fun stepIndexForGeometryIndex(geometryIndex: Int): Int {
+        var current = 0
         for (i in stepEndIndices.indices) {
-            if (geometryIndex <= stepEndIndices[i]) return i
+            if (stepEndIndices[i] <= geometryIndex) current = i
         }
-        return (stepEndIndices.size - 1).coerceAtLeast(0)
+        return current
     }
 
     private fun buildStepEndIndices(route: Route): List<Int> {
-        // Map each step to the geometry vertex index nearest its maneuver location.
+        // Boundary vertices: one per step, at the geometry vertex nearest the step's maneuver
+        // location. Step i spans [boundary(i), boundary(i+1)) — i.e. each boundary is the START
+        // of its step (OSRM maneuvers fire at the beginning of a step), and the last step ends
+        // at the geometry's final vertex.
         val steps = allSteps(route)
         if (steps.isEmpty() || route.geometry.isEmpty()) return emptyList()
         return steps.map { step -> route.nearestGeometryIndex(step.maneuver.location) }
