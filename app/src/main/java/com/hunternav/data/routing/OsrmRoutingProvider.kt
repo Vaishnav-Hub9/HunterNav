@@ -27,21 +27,32 @@ class OsrmRoutingProvider(
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
-    override suspend fun getRoutes(
-        origin: Coordinate,
-        destination: Coordinate,
-        alternatives: Boolean,
-    ): AppResult<List<Route>> {
-        val url = baseUrl.trimEnd('/').toHttpUrl().newBuilder()
+    /**
+     * Builds the OSRM route URL.
+     *
+     * OSRM takes waypoint pairs as `lon,lat` **joined with `;` inside a single path segment**
+     * (`/route/v1/driving/lon1,lat1;lon2,lat2`). Emitting each pair as its own path segment
+     * (slash-separated) makes the demo server answer HTTP 400 — that was the real-device bug.
+     * Internal so unit tests can assert the exact URL shape.
+     */
+    internal fun buildRouteUrl(origin: Coordinate, destination: Coordinate, alternatives: Boolean): String =
+        baseUrl.trimEnd('/').toHttpUrl().newBuilder()
             .addPathSegments("route/v1/driving")
-            // OSRM expects lon,lat order.
-            .addPathSegment("${origin.longitude},${origin.latitude}")
-            .addPathSegment("${destination.longitude},${destination.latitude}")
+            // OSRM expects lon,lat order, semicolon-joined within ONE path segment.
+            .addPathSegment("${origin.longitude},${origin.latitude};${destination.longitude},${destination.latitude}")
             .addQueryParameter("overview", "full")
             .addQueryParameter("geometries", "geojson")
             .addQueryParameter("steps", "true")
             .addQueryParameter("alternatives", if (alternatives) "true" else "false")
             .build()
+            .toString()
+
+    override suspend fun getRoutes(
+        origin: Coordinate,
+        destination: Coordinate,
+        alternatives: Boolean,
+    ): AppResult<List<Route>> {
+        val url = buildRouteUrl(origin, destination, alternatives)
 
         val request = Request.Builder()
             .url(url)
@@ -59,7 +70,12 @@ class OsrmRoutingProvider(
         return try {
             networkClient.execute(request).use { response ->
                 if (!response.isSuccessful) {
-                    DebugLog.d("ROUTE_RESPONSE", "failed http=${response.code}")
+                    // Surface the server's explanation (e.g. OSRM's 400 message) in Logcat.
+                    val errorBody = runCatching { response.body.string() }.getOrDefault("")
+                    DebugLog.d(
+                        "ROUTE_RESPONSE",
+                        "failed http=${response.code} body=${errorBody.take(500).ifBlank { "<empty>" }}",
+                    )
                     AppResult.Failure(AppErrorKind.SERVER, "HTTP ${response.code}")
                 } else {
                     val body = response.body.string()
