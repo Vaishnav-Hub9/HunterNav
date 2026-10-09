@@ -98,6 +98,7 @@ class OsrmRoutingProvider(
         val dto = try {
             json.decodeFromString(OsrmResponseDto.serializer(), body)
         } catch (e: Exception) {
+            DebugLog.d("ROUTE_PARSE_FAILURE", "stage=decode exception=${e::class.simpleName} message=${e.message}")
             return AppResult.Failure(AppErrorKind.PARSE, "Malformed routing response", e)
         }
         if (dto.code != "Ok") {
@@ -106,9 +107,20 @@ class OsrmRoutingProvider(
                 "NoSegment" -> AppErrorKind.UNREACHABLE_DESTINATION
                 else -> AppErrorKind.SERVER
             }
+            DebugLog.d("ROUTE_PARSE_FAILURE", "stage=status code=${dto.code} kind=$kind message=${dto.message}")
             return AppResult.Failure(kind, dto.message ?: "Routing failed (${dto.code})")
         }
-        if (dto.routes.isEmpty()) return AppResult.Failure(AppErrorKind.NO_ROUTE, "No route found")
+        if (dto.routes.isEmpty()) {
+            DebugLog.d("ROUTE_PARSE_FAILURE", "stage=routes reason=empty")
+            return AppResult.Failure(AppErrorKind.NO_ROUTE, "No route found")
+        }
+        DebugLog.d(
+            "ROUTE_PARSE_SUCCESS",
+            "routes=${dto.routes.size} " +
+                "distance_m=${dto.routes.first().distance} " +
+                "duration_s=${dto.routes.first().duration} " +
+                "steps=${dto.routes.first().legs.sumOf { it.steps.size }}",
+        )
         return AppResult.Success(dto.routes.map { OsrmMappers.toRoute(it) })
     }
 }

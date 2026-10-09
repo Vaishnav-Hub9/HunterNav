@@ -1,6 +1,7 @@
 package com.hunternav.domain.navigation
 
 import com.hunternav.core.result.AppErrorKind
+import com.hunternav.core.util.DebugLog
 import com.hunternav.core.util.angleDelta
 import com.hunternav.core.util.distanceMeters
 import com.hunternav.domain.model.Coordinate
@@ -109,6 +110,11 @@ class NavigationEngine(
         stepEndIndices = buildStepEndIndices(route)
 
         _state.value = NavigationState.idle().copy(activeRoute = route)
+        DebugLog.d(
+            "NAVIGATION_STARTED",
+            "distance_m=${route.distanceMeters} duration_s=${route.durationSeconds} " +
+                "geometry_points=${route.geometry.size} steps=${stepEndIndices.size}",
+        )
         if (initialLocation != null) onLocationUpdate(initialLocation)
     }
 
@@ -200,7 +206,14 @@ class NavigationEngine(
         val distance = distanceMeters(location.latitude, location.longitude, dest.latitude, dest.longitude)
         // Accept the fix when close, tolerating GPS accuracy.
         val arrived = distance <= config.arrivalRadiusMeters + location.accuracy.coerceAtMost(30f)
-        if (arrived) arrivalLatched = true
+        if (arrived && !arrivalLatched) {
+            arrivalLatched = true
+            DebugLog.d(
+                "ARRIVAL",
+                "distance_m=%.1f radius_m=%.1f accuracy_m=%.1f"
+                    .format(distance, config.arrivalRadiusMeters, location.accuracy),
+            )
+        }
         return arrived
     }
 
@@ -240,6 +253,11 @@ class NavigationEngine(
                     offRouteLatched = true
                     offRouteCandidateSinceMs = null
                     offRouteCandidateOrigin = null
+                    DebugLog.d(
+                        "OFF_ROUTE",
+                        "deviation_m=%.1f sustained_ms=%d accuracy_m=%.1f moved_m=%.1f"
+                            .format(deviationMeters, now - since, location.accuracy, moved),
+                    )
                 }
             }
         } else {
@@ -258,6 +276,10 @@ class NavigationEngine(
 
         lastRerouteRequestMs = now
         _state.value = _state.value.copy(rerouting = true)
+        DebugLog.d(
+            "REROUTING_STARTED",
+            "from=${location.latitude},${location.longitude} dest=${dest.latitude},${dest.longitude}",
+        )
         activeRerouteJob = scope.launch {
             val result = routingProvider.getRoutes(location.coordinate, dest, alternatives = false)
             // Apply the result atomically with respect to incoming location fixes.
@@ -269,13 +291,19 @@ class NavigationEngine(
                         is com.hunternav.core.result.AppResult.Success -> {
                             val newRoute = result.value.firstOrNull()
                             if (newRoute != null) {
+                                DebugLog.d(
+                                    "REROUTING_SUCCESS",
+                                    "distance_m=${newRoute.distanceMeters} duration_s=${newRoute.durationSeconds}",
+                                )
                                 startNavigation(newRoute, location)
                             } else {
+                                DebugLog.d("REROUTING_FAILURE", "kind=NO_ROUTE message=no route in response")
                                 _events.tryEmit(NavigationEvent.RerouteFailed(AppErrorKind.NO_ROUTE))
                             }
                         }
                         is com.hunternav.core.result.AppResult.Failure -> {
                             // Keep the old route and off-route state; the UI shows a readable message.
+                            DebugLog.d("REROUTING_FAILURE", "kind=${result.kind} message=${result.message}")
                             _events.tryEmit(NavigationEvent.RerouteFailed(result.kind))
                         }
                     }
