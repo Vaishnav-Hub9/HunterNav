@@ -2,6 +2,8 @@ package com.hunternav.ui.map
 
 import android.content.Context
 import android.graphics.Color
+import android.os.Handler
+import android.os.Looper
 import androidx.core.content.ContextCompat
 import com.hunternav.BuildConfig
 import com.hunternav.R
@@ -45,6 +47,15 @@ class MapController(private val context: Context, private val mapView: MapView) 
     private var styleReady = false
     private var navPadding: IntArray? = null
 
+    // Style-load failure reporting (spec §1: a broken map must show a user-visible error).
+    private var onStyleReady: (() -> Unit)? = null
+    private var onStyleError: ((String) -> Unit)? = null
+    private var errorNotified = false
+    private var failListenerRegistered = false
+    private var cameraListenerRegistered = false
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var styleWatchdog: Runnable = Runnable {}
+
     /** Invoked when the user pans/zooms by gesture — screens switch to FREE mode (spec §14). */
     var onUserGesture: (() -> Unit)? = null
 
@@ -62,25 +73,78 @@ class MapController(private val context: Context, private val mapView: MapView) 
         }
     }
 
-    /** Loads the bright OpenFreeMap Liberty style and installs route layers. */
-    fun loadStyle(onReady: () -> Unit) {
+    /**
+     * Loads the bright OpenFreeMap Liberty style and installs route layers.
+     *
+     * [onError] is invoked at most once per attempt when the map/style fails to load, so the
+     * screen can show a real error instead of a blank map (spec §1). Failure sources:
+     * MapLibre's map-load failure listener, and a watchdog for the case where the style
+     * callback never fires at all. A late successful load clears the screen error via [onReady].
+     */
+    fun loadStyle(onReady: () -> Unit, onError: (String) -> Unit = {}) {
+        onStyleReady = onReady
+        onStyleError = onError
+        startStyleLoad()
+    }
+
+    /** Re-attempts the style load after a failure (Retry button in the error overlay). */
+    fun retryStyle() {
+        if (onStyleReady == null) return
+        styleReady = false
+        startStyleLoad()
+    }
+
+    private fun startStyleLoad() {
+        errorNotified = false
+        if (!failListenerRegistered) {
+            failListenerRegistered = true
+            mapView.addOnDidFailLoadingMapListener { error ->
+                notifyStyleError(
+                    if (error.isNullOrBlank()) {
+                        "The map failed to load. Check your internet connection and retry."
+                    } else {
+                        "The map failed to load ($error). Check your internet connection and retry."
+                    },
+                )
+            }
+        }
+        mainHandler.removeCallbacks(styleWatchdog)
+        styleWatchdog = Runnable {
+            if (!styleReady) {
+                notifyStyleError("The map is taking too long to load. Check your internet connection and retry.")
+            }
+        }
+        mainHandler.postDelayed(styleWatchdog, STYLE_LOAD_TIMEOUT_MS)
+
         mapView.getMapAsync { map ->
-            map.addOnCameraMoveStartedListener(
-                object : MapLibreMap.OnCameraMoveStartedListener {
-                    override fun onCameraMoveStarted(reason: Int) {
-                        if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
-                            onUserGesture?.invoke()
+            if (!cameraListenerRegistered) {
+                cameraListenerRegistered = true
+                map.addOnCameraMoveStartedListener(
+                    object : MapLibreMap.OnCameraMoveStartedListener {
+                        override fun onCameraMoveStarted(reason: Int) {
+                            if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
+                                onUserGesture?.invoke()
+                            }
                         }
-                    }
-                },
-            )
+                    },
+                )
+            }
             map.setStyle(BuildConfig.MAP_STYLE_URL) { style ->
                 this.style = style
                 installRouteLayers(style)
                 styleReady = true
-                onReady()
+                mainHandler.removeCallbacks(styleWatchdog)
+                onStyleReady?.invoke()
             }
         }
+    }
+
+    /** Reports a style-load failure to the screen once per attempt. */
+    private fun notifyStyleError(message: String) {
+        if (styleReady || errorNotified) return
+        errorNotified = true
+        mainHandler.removeCallbacks(styleWatchdog)
+        onStyleError?.invoke(message)
     }
 
     private fun installRouteLayers(style: Style) {
@@ -252,5 +316,8 @@ class MapController(private val context: Context, private val mapView: MapView) 
         const val USER_SOURCE_ID = "hunter-user-location"
         const val USER_LAYER_ID = "hunter-user-location-dot"
         const val TILT_DEGREES = 30.0
+
+        /** Style-load watchdog: blank map longer than this ⇒ surface a user-visible error. */
+        const val STYLE_LOAD_TIMEOUT_MS = 12_000L
     }
 }

@@ -41,6 +41,7 @@ import com.hunternav.core.util.DebugLog
 import com.hunternav.core.util.FormatUtils
 import com.hunternav.di.AppContainer
 import com.hunternav.ui.AppViewModel
+import com.hunternav.ui.components.MapLoadErrorOverlay
 import com.hunternav.ui.components.PrimaryActionButton
 import com.hunternav.ui.map.HunterNavMapView
 import com.hunternav.ui.map.MapController
@@ -68,6 +69,7 @@ fun RoutePreviewScreen(
 
     var mapController by remember { mutableStateOf<MapController?>(null) }
     var routeAttempted by remember { mutableStateOf(false) }
+    var mapError by remember { mutableStateOf<String?>(null) }
 
     // Fetch if arriving without routes (e.g. process recreation).
     // Always attempt, even with no destination, so the failure is shown instead of a silent "—".
@@ -111,12 +113,21 @@ fun RoutePreviewScreen(
             onMapViewReady = { mv ->
                 val controller = MapController(context, mv)
                 mapController = controller
-                controller.loadStyle {
-                    viewModel.engine.state.value.currentLocation?.let { controller.showUserLocation(it) }
-                    viewModel.onMapReady()
-                }
+                controller.loadStyle(
+                    onReady = {
+                        mapError = null
+                        viewModel.engine.state.value.currentLocation?.let { controller.showUserLocation(it) }
+                        viewModel.onMapReady()
+                    },
+                    onError = { mapError = it },
+                )
             },
         )
+
+        // Map/style load failure: visible error + retry instead of a blank screen (spec §1).
+        mapError?.let { message ->
+            MapLoadErrorOverlay(message = message, onRetry = { mapController?.retryStyle() })
+        }
 
         // Current-location pointer stays live on the preview map as well.
         LaunchedEffect(mapController) {

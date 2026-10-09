@@ -48,6 +48,7 @@ import com.hunternav.domain.model.Coordinate
 import com.hunternav.domain.model.Destination
 import com.hunternav.ui.AppViewModel
 import com.hunternav.ui.components.HunterLogo
+import com.hunternav.ui.components.MapLoadErrorOverlay
 import com.hunternav.ui.components.PrimaryActionButton
 import com.hunternav.ui.map.HunterNavMapView
 import com.hunternav.ui.map.MapController
@@ -84,6 +85,7 @@ fun HomeScreen(
 
     var mapController by remember { mutableStateOf<MapController?>(null) }
     var mapView by remember { mutableStateOf<MapView?>(null) }
+    var mapError by remember { mutableStateOf<String?>(null) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -114,12 +116,21 @@ fun HomeScreen(
                 mapView = mv
                 val controller = MapController(context, mv)
                 mapController = controller
-                controller.loadStyle {
-                    viewModel.engine.state.value.currentLocation?.let { controller.showUserLocation(it) }
-                    viewModel.onMapReady()
-                }
+                controller.loadStyle(
+                    onReady = {
+                        mapError = null
+                        viewModel.engine.state.value.currentLocation?.let { controller.showUserLocation(it) }
+                        viewModel.onMapReady()
+                    },
+                    onError = { mapError = it },
+                )
             },
         )
+
+        // Map/style load failure: visible error + retry instead of a blank screen (spec §1).
+        mapError?.let { message ->
+            MapLoadErrorOverlay(message = message, onRetry = { mapController?.retryStyle() })
+        }
 
         // Keep the current-location pointer in sync with the engine (acceptance 5–6).
         LaunchedEffect(mapController) {

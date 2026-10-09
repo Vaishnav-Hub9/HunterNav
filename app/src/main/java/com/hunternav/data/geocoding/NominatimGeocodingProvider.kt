@@ -154,29 +154,43 @@ class NominatimGeocodingProvider(
         }
     }
 
-    private fun parseSearch(body: String): AppResult<List<Destination>> {
+    /**
+     * Parses a Nominatim `jsonv2` search array. Internal so unit tests can exercise the
+     * geocoder-result → Destination mapping (spec §18) without a network.
+     */
+    internal fun parseSearch(body: String): AppResult<List<Destination>> {
         return try {
             val arr = json.parseToJsonElement(body).jsonArray
-            AppResult.Success(arr.map { el -> destinationFrom(el.jsonObject, fallbackSubtitle = null) })
+            // Coordinates are mandatory: results without lat/lon are dropped, never (0,0).
+            AppResult.Success(arr.mapNotNull { el -> destinationFrom(el.jsonObject, fallbackCoordinate = null) })
         } catch (e: Exception) {
             AppResult.Failure(AppErrorKind.PARSE, "Malformed geocoder response", e)
         }
     }
 
-    private fun parseReverse(body: String, coordinate: Coordinate): AppResult<Destination> {
+    /** Parses a Nominatim reverse response; falls back to the pressed coordinate (spec §4). */
+    internal fun parseReverse(body: String, coordinate: Coordinate): AppResult<Destination> {
         return try {
             val obj = json.parseToJsonElement(body).jsonObject
             if (obj.containsKey("error")) {
                 AppResult.Success(Destination(coordinate, title = "Dropped pin"))
             } else {
-                AppResult.Success(destinationFrom(obj, fallbackSubtitle = null))
+                AppResult.Success(
+                    destinationFrom(obj, fallbackCoordinate = coordinate)
+                        ?: Destination(coordinate, title = "Dropped pin"),
+                )
             }
         } catch (e: Exception) {
             AppResult.Failure(AppErrorKind.PARSE, "Malformed geocoder response", e)
         }
     }
 
-    private fun destinationFrom(obj: JsonObject, fallbackSubtitle: String?): Destination {
+    /**
+     * Maps one Nominatim object to a [Destination]. Returns null when the response carries no
+     * usable coordinates and no [fallbackCoordinate] is available — a destination without
+     * latitude/longitude can never be routed to, so it must not become a fake (0,0) entry.
+     */
+    private fun destinationFrom(obj: JsonObject, fallbackCoordinate: Coordinate?): Destination? {
         val name = obj["name"]?.jsonPrimitive?.takeIf { it.isString && it.content.isNotBlank() }
         val displayName = obj["display_name"]?.jsonPrimitive?.content ?: ""
         val address = obj["address"] as? JsonObject
@@ -186,11 +200,15 @@ class NominatimGeocodingProvider(
                 ?: it["town"]?.let { v -> runCatching { v.jsonPrimitive.content }.getOrNull() }
                 ?: it["village"]?.let { v -> runCatching { v.jsonPrimitive.content }.getOrNull() }
             listOfNotNull(road, city).joinToString(", ").ifBlank { null }
-        } ?: fallbackSubtitle
+        }
 
         val lat = obj["lat"]?.jsonPrimitive?.content?.toDoubleOrNull()
         val lon = obj["lon"]?.jsonPrimitive?.content?.toDoubleOrNull()
-        val coordinate = if (lat != null && lon != null) Coordinate(lat, lon) else Coordinate(0.0, 0.0)
+        val coordinate = when {
+            lat != null && lon != null -> Coordinate(lat, lon)
+            fallbackCoordinate != null -> fallbackCoordinate
+            else -> return null
+        }
 
         return Destination(
             coordinate = coordinate,

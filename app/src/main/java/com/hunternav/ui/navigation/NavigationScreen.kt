@@ -44,6 +44,7 @@ import com.hunternav.domain.model.CameraMode
 import com.hunternav.domain.model.LocationData
 import com.hunternav.ui.AppViewModel
 import com.hunternav.ui.components.ManeuverIcon
+import com.hunternav.ui.components.MapLoadErrorOverlay
 import com.hunternav.ui.components.PillChip
 import com.hunternav.ui.components.StatusRibbon
 import com.hunternav.ui.map.HunterNavMapView
@@ -76,6 +77,7 @@ fun NavigationScreen(
     var cameraController by remember { mutableStateOf<NavigationCameraController?>(null) }
     var cameraMode by remember { mutableStateOf(CameraMode.FOLLOW) }
     var mapHeightPx by remember { mutableIntStateOf(0) }
+    var mapError by remember { mutableStateOf<String?>(null) }
 
     // Reserve the top band so the camera keeps the puck in the lower-middle of the screen.
     LaunchedEffect(mapHeightPx, mapController) {
@@ -121,14 +123,23 @@ fun NavigationScreen(
                     cameraMode = CameraMode.FREE
                     controller.setCameraMode(CameraMode.FREE)
                 }
-                controller.loadStyle {
-                    controller.showRoute(route)
-                    route?.let { controller.fitRoute(it) }
-                    viewModel.engine.state.value.currentLocation?.let { controller.showUserLocation(it) }
-                    viewModel.onMapReady()
-                }
+                controller.loadStyle(
+                    onReady = {
+                        mapError = null
+                        controller.showRoute(route)
+                        route?.let { controller.fitRoute(it) }
+                        viewModel.engine.state.value.currentLocation?.let { controller.showUserLocation(it) }
+                        viewModel.onMapReady()
+                    },
+                    onError = { mapError = it },
+                )
             },
         )
+
+        // Map/style load failure: visible error + retry instead of a blank screen (spec §1).
+        mapError?.let { message ->
+            MapLoadErrorOverlay(message = message, onRetry = { mapController?.retryStyle() })
+        }
 
         // Maneuver banner (top)
         Surface(

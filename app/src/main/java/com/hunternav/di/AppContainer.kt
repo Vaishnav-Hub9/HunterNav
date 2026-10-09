@@ -21,19 +21,26 @@ import kotlinx.coroutines.SupervisorJob
 /**
  * Hand-rolled dependency container (V1 keeps DI minimal; swap for Hilt later if desired).
  * All configurable endpoints come from BuildConfig, which reads local.properties overrides.
+ *
+ * [routingProviderOverride] / [geocodingProviderOverride] exist so unit tests can exercise the
+ * destination → route → preview flow with fakes (default null ⇒ production providers).
  */
-class AppContainer(context: Context) {
+class AppContainer(
+    context: Context,
+    routingProviderOverride: RoutingProvider? = null,
+    geocodingProviderOverride: GeocodingProvider? = null,
+) {
 
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private val networkClient = NetworkClient()
 
-    val routingProvider: RoutingProvider = OsrmRoutingProvider(
+    val routingProvider: RoutingProvider = routingProviderOverride ?: OsrmRoutingProvider(
         baseUrl = BuildConfig.OSRM_BASE_URL,
         networkClient = networkClient,
     )
 
-    val geocodingProvider: GeocodingProvider = NominatimGeocodingProvider(
+    val geocodingProvider: GeocodingProvider = geocodingProviderOverride ?: NominatimGeocodingProvider(
         baseUrl = BuildConfig.GEOCODER_BASE_URL,
         networkClient = networkClient,
     )

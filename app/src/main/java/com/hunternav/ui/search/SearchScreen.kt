@@ -95,10 +95,14 @@ fun SearchScreen(
                     when (result) {
                         is com.hunternav.core.result.AppResult.Success -> state.results.value = result.value
                         is com.hunternav.core.result.AppResult.Failure ->
+                            // Spec §4: every geocoding failure must say "Unable to find destination"
+                            // instead of silently producing an empty destination.
                             state.error.value = when (result.kind) {
-                                com.hunternav.core.result.AppErrorKind.NETWORK -> "No internet connection."
-                                com.hunternav.core.result.AppErrorKind.TIMEOUT -> "Search timed out. Try again."
-                                else -> "Search is unavailable right now."
+                                com.hunternav.core.result.AppErrorKind.NETWORK ->
+                                    "No internet connection. Unable to find destination."
+                                com.hunternav.core.result.AppErrorKind.TIMEOUT ->
+                                    "Search timed out. Unable to find destination."
+                                else -> "Unable to find destination"
                             }
                     }
                 }
