@@ -1,5 +1,6 @@
 package com.hunternav.ui.navigation
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -78,6 +79,14 @@ fun NavigationScreen(
     var cameraMode by remember { mutableStateOf(CameraMode.FOLLOW) }
     var mapHeightPx by remember { mutableIntStateOf(0) }
     var mapError by remember { mutableStateOf<String?>(null) }
+
+    // System back during active navigation must behave exactly like the cancel button:
+    // tear the trip down (jobs, engine, route, arrival latch) BEFORE leaving the screen.
+    // Without this, popping the screen left the engine navigating and rerouting off-screen.
+    BackHandler {
+        viewModel.cancelNavigation()
+        onExit()
+    }
 
     // Reserve the top band so the camera keeps the puck in the lower-middle of the screen.
     LaunchedEffect(mapHeightPx, mapController) {
@@ -286,7 +295,7 @@ fun NavigationScreen(
                             Modifier.weight(1f),
                         )
                         BottomMetric(
-                            "ETA",
+                            "ETA (est.)",
                             FormatUtils.eta(navState.remainingDuration, System.currentTimeMillis()),
                             Modifier.weight(1f),
                         )

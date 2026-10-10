@@ -3,7 +3,6 @@ package com.hunternav.ui.search
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -32,40 +31,40 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
-import com.hunternav.ui.rememberAppViewModel
+import com.hunternav.core.result.AppErrorKind
+import com.hunternav.core.result.AppResult
 import com.hunternav.di.AppContainer
 import com.hunternav.domain.model.Destination
 import com.hunternav.ui.AppViewModel
+import com.hunternav.ui.rememberAppViewModel
 import com.hunternav.ui.theme.Cobalt
 import com.hunternav.ui.theme.InkSecondary
 import com.hunternav.ui.theme.Ivory
-import kotlinx.coroutines.FlowPreview
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
-/** Search state container: debounced query flow + results. Lives outside recomposition. */
-class SearchState {
-    val query = MutableStateFlow("")
-    val results = MutableStateFlow<List<Destination>>(emptyList())
-    val loading = MutableStateFlow(false)
-    val error = MutableStateFlow<String?>(null)
-}
-
-/** Destination search: debounced Nominatim queries + confirm action. */
-@OptIn(FlowPreview::class)
+/**
+ * Destination search (spec §5 — public Nominatim usage policy):
+ *  - queries fire ONLY on deliberate submission (IME Search action or the trailing button) —
+ *    no type-ahead/autocomplete requests while typing,
+ *  - the previous in-flight request is cancelled so a slow old response can never overwrite
+ *    newer results,
+ *  - the user's GPS location is NEVER sent to the geocoder,
+ *  - the provider enforces ≥1 s between requests app-wide and caches repeated queries, so
+ *    even a submit-spam stays within policy.
+ * Every failure (network, timeout, HTTP, malformed, empty) lands in a visible, finite state —
+ * never an indefinite spinner.
+ */
 @Composable
 fun SearchScreen(
     container: AppContainer,
@@ -73,39 +72,46 @@ fun SearchScreen(
     onBack: () -> Unit,
 ) {
     val viewModel: AppViewModel = rememberAppViewModel(container)
-    val state = remember { SearchState() }
 
-    // Debounced search (spec: debounce search, cancel stale requests).
-    LaunchedEffect(Unit) {
-        launch {
-            state.query
-                .debounce(350)
-                .distinctUntilChanged()
-                .collect { query ->
-                    if (query.isBlank()) {
-                        state.results.value = emptyList()
-                        state.error.value = null
-                        return@collect
-                    }
-                    state.loading.value = true
-                    state.error.value = null
-                    val near = viewModel.currentLocationOrNull()?.coordinate
-                    val result = container.searchDestination(query, near)
-                    state.loading.value = false
-                    when (result) {
-                        is com.hunternav.core.result.AppResult.Success -> state.results.value = result.value
-                        is com.hunternav.core.result.AppResult.Failure ->
-                            // Spec §4: every geocoding failure must say "Unable to find destination"
-                            // instead of silently producing an empty destination.
-                            state.error.value = when (result.kind) {
-                                com.hunternav.core.result.AppErrorKind.NETWORK ->
-                                    "No internet connection. Unable to find destination."
-                                com.hunternav.core.result.AppErrorKind.TIMEOUT ->
-                                    "Search timed out. Unable to find destination."
-                                else -> "Unable to find destination"
-                            }
+    var queryText by remember { mutableStateOf("") }
+    var results by remember { mutableStateOf<List<Destination>>(emptyList()) }
+    var loading by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var hasSearched by remember { mutableStateOf(false) }
+
+    val scope = rememberCoroutineScope()
+    var searchJob by remember { mutableStateOf<Job?>(null) }
+
+    fun submitSearch() {
+        val query = queryText.trim()
+        if (query.isEmpty()) {
+            results = emptyList()
+            error = null
+            hasSearched = false
+            return
+        }
+        searchJob?.cancel()
+        searchJob = scope.launch {
+            hasSearched = true
+            loading = true
+            error = null
+            when (val result = container.searchDestination(query, near = null)) {
+                is AppResult.Success -> {
+                    loading = false
+                    results = result.value
+                }
+                is AppResult.Failure -> {
+                    loading = false
+                    results = emptyList()
+                    error = when (result.kind) {
+                        AppErrorKind.NETWORK -> "No internet connection. Unable to find destination."
+                        AppErrorKind.TIMEOUT -> "Search timed out. Unable to find destination."
+                        // Spec §4: every geocoding failure must say why instead of silently
+                        // producing an empty destination.
+                        else -> "Unable to find destination"
                     }
                 }
+            }
         }
     }
 
@@ -130,11 +136,16 @@ fun SearchScreen(
             Spacer(Modifier.height(14.dp))
 
             OutlinedTextField(
-                value = state.query.collectAsState().value,
-                onValueChange = { state.query.value = it },
+                value = queryText,
+                onValueChange = { queryText = it },
                 modifier = Modifier.fillMaxWidth(),
                 placeholder = { Text("Search a place or address…", color = InkSecondary) },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Cobalt) },
+                trailingIcon = {
+                    IconButton(onClick = { submitSearch() }) {
+                        Icon(Icons.Default.Search, contentDescription = "Search", tint = Cobalt)
+                    }
+                },
                 singleLine = true,
                 shape = RoundedCornerShape(16.dp),
                 colors = OutlinedTextFieldDefaults.colors(
@@ -144,14 +155,10 @@ fun SearchScreen(
                     unfocusedContainerColor = Color.White,
                 ),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { state.query.value.let { q -> state.query.value = q } }),
+                keyboardActions = KeyboardActions(onSearch = { submitSearch() }),
             )
 
             Spacer(Modifier.height(12.dp))
-
-            val loading by state.loading.collectAsState()
-            val error by state.error.collectAsState()
-            val results by state.results.collectAsState()
 
             when {
                 loading -> Row(
@@ -167,8 +174,8 @@ fun SearchScreen(
                 )
 
                 results.isEmpty() -> Text(
-                    if (state.query.collectAsState().value.isBlank()) {
-                        "Type to search — or go back and long-press the map to drop a pin."
+                    if (!hasSearched) {
+                        "Type a place and press search — or go back and long-press the map to drop a pin."
                     } else {
                         "No results. Try a different query."
                     },

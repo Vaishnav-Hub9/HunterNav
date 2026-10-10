@@ -96,6 +96,19 @@ class AppViewModelTest {
         }
     }
 
+    /** Reverse geocoder whose answer only arrives after the gate opens (stale-label test). */
+    private class SlowReverseGeocoder(private val resultDestination: Destination) : GeocodingProvider {
+        val gate = CompletableDeferred<Unit>()
+
+        override suspend fun search(query: String, near: Coordinate?, limit: Int): AppResult<List<Destination>> =
+            AppResult.Success(emptyList())
+
+        override suspend fun reverse(coordinate: Coordinate): AppResult<Destination> {
+            withContext(NonCancellable) { gate.await() }
+            return AppResult.Success(resultDestination)
+        }
+    }
+
     @Before
     fun setUp() {
         // AppViewModel's viewModelScope runs on Dispatchers.Main; back it with the test scheduler.
@@ -309,5 +322,123 @@ class AppViewModelTest {
         assertEquals(1, vm.routes.value.size)
         assertFalse(vm.isLoadingRoutes.value)
         assertNull(vm.routeError.value)
+    }
+
+    // -----------------------------------------------------------------
+    // Repeated taps, trip lifecycle (reliability audit §2/§11)
+    // -----------------------------------------------------------------
+
+    @Test
+    fun `repeated route taps while loading do not duplicate requests`() = runTest {
+        val routing = FakeRoutingProvider(AppResult.Success(listOf(route())))
+        val vm = AppViewModel(container(routing = routing))
+
+        vm.onDestinationSelected(charminar)
+        vm.engine.onLocationUpdate(location())
+        // Rapid "Start Navigation" taps all funnel into ensureRoute(): only ONE request.
+        vm.ensureRoute()
+        vm.ensureRoute()
+        vm.ensureRoute()
+        advanceUntilIdle()
+
+        assertEquals("duplicate in-flight route requests", 1, routing.calls)
+        assertEquals(1, vm.routes.value.size)
+    }
+
+    @Test
+    fun `double-tapped start navigation does not restart the trip`() = runTest {
+        val vm = AppViewModel(container())
+        vm.setDemoMode(true) // demo source keeps the test hermetic (no Android location APIs)
+        vm.onDestinationSelected(charminar)
+        vm.engine.onLocationUpdate(location())
+        vm.prepareRoute()
+        advanceUntilIdle()
+
+        vm.startNavigation()
+        vm.startNavigation() // second tap must be a no-op
+        advanceUntilIdle()
+
+        assertEquals(AppPhase.NAVIGATING, vm.phase.value)
+        assertEquals("the trip must have been installed exactly once", 1L, vm.engine.state.value.routeVersion)
+    }
+
+    @Test
+    fun `cancel navigation clears the whole trip`() = runTest {
+        val vm = AppViewModel(container())
+        vm.setDemoMode(true)
+        vm.onDestinationSelected(charminar)
+        vm.engine.onLocationUpdate(location())
+        vm.prepareRoute()
+        advanceUntilIdle()
+        vm.startNavigation()
+        assertEquals(AppPhase.NAVIGATING, vm.phase.value)
+
+        vm.cancelNavigation()
+
+        assertEquals(AppPhase.IDLE, vm.phase.value)
+        assertNull("stop must drop the prior destination", vm.destination.value)
+        assertTrue(vm.routes.value.isEmpty())
+        assertNull(vm.selectedRoute.value)
+        assertNull("the engine must hold no route after stop", vm.engine.state.value.activeRoute)
+        assertFalse(vm.isLoadingRoutes.value)
+        assertNull(vm.routeError.value)
+    }
+
+    @Test
+    fun `cancel during an in-flight route request prevents the late response from restoring state`() = runTest {
+        val routing = SlowFirstRequestRouter(
+            staleRoute = route(distanceMeters = 1111.0),
+            freshRoute = route(distanceMeters = 2222.0),
+        )
+        val vm = AppViewModel(container(routing = routing))
+
+        vm.onDestinationSelected(charminar)
+        vm.engine.onLocationUpdate(location())
+        vm.prepareRoute()
+        advanceUntilIdle()
+        assertTrue(vm.isLoadingRoutes.value)
+
+        vm.cancelNavigation()
+        routing.firstRequestGate.complete(Unit) // late response for the cancelled trip
+        advanceUntilIdle()
+
+        assertNull(vm.destination.value)
+        assertTrue("late responses must not resurrect a cancelled trip", vm.routes.value.isEmpty())
+        assertNull(vm.selectedRoute.value)
+        assertFalse(vm.isLoadingRoutes.value)
+    }
+
+    @Test
+    fun `finish arrival clears the trip so the next one starts clean`() = runTest {
+        val vm = AppViewModel(container())
+        vm.setDemoMode(true)
+        vm.onDestinationSelected(charminar)
+        vm.engine.onLocationUpdate(location())
+        vm.prepareRoute()
+        advanceUntilIdle()
+        vm.startNavigation()
+
+        vm.finishArrival()
+
+        assertEquals(AppPhase.IDLE, vm.phase.value)
+        assertNull(vm.destination.value)
+        assertTrue(vm.routes.value.isEmpty())
+        assertNull(vm.selectedRoute.value)
+        assertNull(vm.engine.state.value.activeRoute)
+    }
+
+    @Test
+    fun `stale reverse label from a previous pin never overwrites a newer destination`() = runTest {
+        val geocoder = SlowReverseGeocoder(Destination(Coordinate(17.4111, 78.5111), title = "Old Pin"))
+        val vm = AppViewModel(container(geocoder = geocoder))
+
+        vm.onMapLongPress(Coordinate(17.4000, 78.5000))
+        advanceUntilIdle() // reverse lookup now in flight (gated)
+
+        vm.onDestinationSelected(charminar)
+        geocoder.gate.complete(Unit) // stale label arrives late
+        advanceUntilIdle()
+
+        assertEquals("Charminar", vm.destination.value?.title)
     }
 }

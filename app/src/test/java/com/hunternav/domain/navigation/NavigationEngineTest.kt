@@ -11,12 +11,14 @@ import com.hunternav.domain.model.RouteStep
 import com.hunternav.domain.repository.RoutingProvider
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -478,6 +480,108 @@ class NavigationEngineTest {
         assertEquals(500.0, after.remainingDuration, 25.0)
         assertTrue("remaining distance must reflect the new geometry", after.remainingDistance > 600.0)
         assertTrue(after.remainingDistance < 760.0)
+    }
+
+    // -----------------------------------------------------------------
+    // Trip lifecycle, arrival-once, GPS-noise clamps (reliability audit §9/§11)
+    // -----------------------------------------------------------------
+
+    @Test
+    fun `arrival is announced exactly once for a trip`() = runTest {
+        val routing = FakeRoutingProvider(baseRoute())
+        var now = 0L
+        val engine = engine(routing, { now })
+        val arrivals = mutableListOf<NavigationEvent.ArrivedAtDestination>()
+        val collector = launch(UnconfinedTestDispatcher(testScheduler)) {
+            engine.events.collect { event ->
+                if (event is NavigationEvent.ArrivedAtDestination) arrivals += event
+            }
+        }
+
+        engine.startNavigation(baseRoute(), fix(17.3850, 78.4867, 0))
+        // Several fixes inside the arrival radius — the event fires only on the first.
+        now = 1_000
+        engine.onLocationUpdate(fix(17.3890, 78.4867, now))
+        now = 2_000
+        engine.onLocationUpdate(fix(17.38901, 78.48671, now))
+        now = 3_000
+        engine.onLocationUpdate(fix(17.38899, 78.4867, now))
+
+        assertEquals("arrival must be presented once", 1, arrivals.size)
+        assertTrue(engine.state.value.destinationReached)
+        collector.cancel()
+    }
+
+    @Test
+    fun `stopping navigation during an in-flight reroute ignores the late response`() = runTest {
+        val routing = FakeRoutingProvider(baseRoute())
+        var now = 0L
+        val engine = engine(routing, { now })
+        routing.gate = CompletableDeferred()
+
+        engine.startNavigation(baseRoute(), fix(17.3850, 78.4867, 0))
+        now = 1_000
+        engine.onLocationUpdate(fix(17.3855, 78.4877, now))
+        now = 3_000
+        engine.onLocationUpdate(fix(17.3857, 78.4879, now))
+        now = 6_000
+        engine.onLocationUpdate(fix(17.3860, 78.4881, now))
+        assertEquals("reroute must have been requested", 1, routing.callCount)
+
+        engine.stopNavigation()
+        routing.gate!!.complete(Unit)
+        advanceUntilIdle()
+
+        assertNull("a late reroute response must not resurrect a stopped trip", engine.state.value.activeRoute)
+        assertFalse(engine.state.value.rerouting)
+        assertFalse(engine.state.value.destinationReached)
+    }
+
+    @Test
+    fun `small backward gps noise does not increase remaining distance`() = runTest {
+        val routing = FakeRoutingProvider(baseRoute())
+        var now = 0L
+        val engine = engine(routing, { now })
+
+        engine.startNavigation(baseRoute(), fix(17.3850, 78.4867, 0))
+        now = 1_000
+        engine.onLocationUpdate(fix(17.3859, 78.4867, now)) // ~100 m along (vertex 1)
+        val atVertex = engine.state.value.remainingDistance
+
+        now = 2_000
+        engine.onLocationUpdate(fix(17.38581, 78.4867, now)) // ~10 m backward (GPS noise)
+        assertEquals(
+            "remaining must not jump up on a tiny backtrack",
+            atVertex,
+            engine.state.value.remainingDistance,
+            0.001,
+        )
+
+        // A genuine return to an earlier portion of the route IS accepted (> tolerance).
+        now = 3_000
+        engine.onLocationUpdate(fix(17.3850, 78.4867, now))
+        assertTrue(engine.state.value.remainingDistance > atVertex)
+    }
+
+    @Test
+    fun `route version increments on start and on reroute replacement`() = runTest {
+        val routing = FakeRoutingProvider(baseRoute())
+        var now = 0L
+        val engine = engine(routing, { now })
+
+        engine.startNavigation(baseRoute(), fix(17.3850, 78.4867, 0))
+        assertEquals(1L, engine.state.value.routeVersion)
+
+        now = 1_000
+        engine.onLocationUpdate(fix(17.3855, 78.4877, now))
+        now = 3_000
+        engine.onLocationUpdate(fix(17.3857, 78.4879, now))
+        now = 6_000
+        engine.onLocationUpdate(fix(17.3860, 78.4881, now))
+        advanceUntilIdle()
+
+        assertEquals(1, routing.callCount)
+        assertEquals("the replacement route must bump the version", 2L, engine.state.value.routeVersion)
     }
 
     private fun TestScope.engine(routing: RoutingProvider, clock: () -> Long) = NavigationEngine(

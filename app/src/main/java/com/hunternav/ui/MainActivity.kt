@@ -11,6 +11,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.hunternav.HunterNavApplication
+import com.hunternav.core.util.DebugLog
 import com.hunternav.di.AppContainer
 import com.hunternav.ui.home.HomeScreen
 import com.hunternav.ui.navigation.NavigationScreen
@@ -45,43 +46,75 @@ class MainActivity : ComponentActivity() {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     val navController = rememberNavController()
                     val appContainer = container
+                    // Single-top everywhere: rapidly tapping a button must never stack
+                    // duplicate entries (duplicate screens = back-button loops).
+                    fun navigateTo(route: String) {
+                        DebugLog.d(
+                            "SCREEN_TRANSITION",
+                            "navigate to=$route from=${navController.currentDestination?.route ?: "?"}",
+                        )
+                        navController.navigate(route) { launchSingleTop = true }
+                    }
+
                     NavHost(navController = navController, startDestination = Routes.SPLASH) {
                         composable(Routes.SPLASH) {
                             SplashScreen(onReady = {
-                                navController.navigate(Routes.HOME) { popUpTo(Routes.SPLASH) { inclusive = true } }
+                                navController.navigate(Routes.HOME) {
+                                    popUpTo(Routes.SPLASH) { inclusive = true }
+                                    launchSingleTop = true
+                                }
                             })
                         }
                         composable(Routes.HOME) {
                             HomeScreen(
                                 container = appContainer,
-                                onOpenSearch = { navController.navigate(Routes.SEARCH) },
-                                onOpenSettings = { navController.navigate(Routes.SETTINGS) },
-                                onDestinationPicked = { navController.navigate(Routes.ROUTE_PREVIEW) },
-                                onStartNavigation = { navController.navigate(Routes.NAVIGATION) },
+                                onOpenSearch = { navigateTo(Routes.SEARCH) },
+                                onOpenSettings = { navigateTo(Routes.SETTINGS) },
+                                onDestinationPicked = { navigateTo(Routes.ROUTE_PREVIEW) },
+                                onStartNavigation = { navigateTo(Routes.NAVIGATION) },
                             )
                         }
                         composable(Routes.SEARCH) {
                             SearchScreen(
                                 container = appContainer,
+                                // Selecting a result lands on Route Preview exactly once,
+                                // whether Search was opened from Home or from Preview:
+                                // everything above Home is replaced by a single preview entry,
+                                // so Back from Preview always goes to Home (no loops).
                                 onDestinationConfirmed = {
-                                    navController.previousBackStackEntry
-                                        ?.savedStateHandle?.set("destination_confirmed", true)
+                                    DebugLog.d(
+                                        "SCREEN_TRANSITION",
+                                        "navigate to=${Routes.ROUTE_PREVIEW} from=${Routes.SEARCH} (destination confirmed)",
+                                    )
+                                    navController.navigate(Routes.ROUTE_PREVIEW) {
+                                        popUpTo(Routes.HOME)
+                                        launchSingleTop = true
+                                    }
+                                },
+                                onBack = {
+                                    DebugLog.d("SCREEN_TRANSITION", "back search -> previous")
                                     navController.popBackStack()
                                 },
-                                onBack = { navController.popBackStack() },
                             )
                         }
                         composable(Routes.ROUTE_PREVIEW) {
                             RoutePreviewScreen(
                                 container = appContainer,
-                                onChangeDestination = {
-                                    navController.navigate(Routes.SEARCH) { launchSingleTop = true }
-                                },
-                                onStartNavigation = { navController.navigate(Routes.NAVIGATION) { launchSingleTop = true } },
+                                onChangeDestination = { navigateTo(Routes.SEARCH) },
+                                onStartNavigation = { navigateTo(Routes.NAVIGATION) },
                             )
                         }
                         composable(Routes.NAVIGATION) {
-                            NavigationScreen(container = appContainer, onExit = { navController.popBackStack() })
+                            // Exiting navigation (button or system back, see NavigationScreen's
+                            // BackHandler) always tears the trip down first and returns to Home
+                            // exactly once — never back onto a stale Route Preview.
+                            NavigationScreen(
+                                container = appContainer,
+                                onExit = {
+                                    DebugLog.d("SCREEN_TRANSITION", "exit navigation -> home")
+                                    navController.popBackStack(Routes.HOME, inclusive = false)
+                                },
+                            )
                         }
                         composable(Routes.SETTINGS) {
                             SettingsScreen(container = appContainer, onBack = { navController.popBackStack() })

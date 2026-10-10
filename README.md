@@ -119,10 +119,41 @@ built-in attribution control is left enabled on the map. Do not remove or hide i
   limits and no SLA.
 - Nominatim's public instance also requires low volume and a proper User-Agent (set by the
   app). For anything beyond testing, self-host (see [backend/README.md](backend/README.md)).
-- OSRM's `driving` profile is used — this is **not** motorcycle-optimized routing (no
-  lean-aware, no motorcycle-specific preferences). That is exactly why routing sits behind
-  `RoutingProvider`: a GraphHopper motorcycle-profile provider can be added later without
-  touching navigation code.
+- OSRM's `driving` (car) profile is used — this is **not** motorcycle-optimized routing
+  (no lean-aware, no motorcycle-specific preferences), and it must not be described as
+  proven motorcycle routing; a cycling profile is not a substitute either. That is exactly
+  why routing sits behind `RoutingProvider`: evaluating a GraphHopper motorcycle-profile
+  provider is a separate task (see [backend/README.md](backend/README.md)) and can be added
+  later without touching navigation code.
+- Requests to the public demo endpoint are rate-limited in-app to **≤1/second** with bounded
+  retries (2 retries, exponential backoff) for transient failures only (network, timeout,
+  5xx, 429); invalid requests (4xx) are surfaced immediately and never retried.
+
+## Privacy & external services
+
+HunterNav has **no accounts, no analytics and no crash-reporting SDKs**, and stores no data
+server-side (there is no first-party backend). What third parties can see:
+
+| Provider | Data sent | Why |
+|----------|-----------|-----|
+| **OpenFreeMap** (tiles) | Which geographic tiles the map displays, your IP | Map rendering |
+| **Nominatim** (search) | Search text you submitted; optionally a dropped pin's coordinates for reverse labeling | Place search. **Your live GPS position is never sent for text search.** |
+| **OSRM** (routing) | Origin and destination coordinates of a route request, current position when rerouting | Route calculation |
+| **Google Play services** (device location) | Location handled per Google's Play services terms, if installed | Fused on-device/network location only |
+
+These services can see these requests — nothing in HunterNav hides them. Location stays on
+the device; precise-coordinate diagnostics are written **only to Logcat in debug builds**
+(`DebugLog` is a no-op in release). No secrets/API keys exist in the app or the repository.
+An in-app summary lives in *Settings → Privacy & services*. OSM attribution is displayed per
+OpenStreetMap attribution requirements.
+
+### Geocoding usage policy (public Nominatim)
+
+- Searches fire only on **deliberate submission** (no type-ahead/autocomplete).
+- One app-wide rate limit: **≤1 request/second** across search and reverse lookups.
+- Successful queries are cached for ~10 minutes to avoid repeat traffic.
+- Requests identify with a `User-Agent`; the provider URL is configurable (`geocoder.baseUrl`).
+- Public Nominatim is a **limited development service** — self-host for production volume.
 
 ## Switching routing providers
 
@@ -152,12 +183,27 @@ physically moving. The fake source (`FakeLocationProvider`) is also what the uni
 ## Testing
 
 ```bash
-./gradlew :app:testDebugUnitTest
+./gradlew clean :app:testDebugUnitTest :app:assembleDebug
 ```
 
-Covers: OSRM response parsing, polyline decoding, maneuver normalization, distance/duration
-formatting, off-route hysteresis, reroute cooldown & single-flight, arrival detection,
-navigation state transitions, and the demo simulator.
+Covers: OSRM response parsing/validation/error classes, retries and rate limiting, polyline
+decoding, maneuver normalization and step advancement, remaining-distance/ETA math,
+off-route hysteresis, reroute cooldown & single-flight, arrival-once detection, trip
+cleanup, stale-response protection (destination switching, cancellation), geocoder rate
+limiting + caching, distance/duration formatting, and demo-mode simulation.
+
+Unit tests use deterministic fakes; production routing/geocoding always hit the real
+providers. A genuine captured OSRM response is embedded as a test fixture.
+
+## Reliability status — what still needs road testing
+
+Verified by unit tests and live API traces: destination-specific routing, maneuver
+advancement, metric math, reroute guards, arrival latching, trip cleanup, failure states.
+**Not verified without a physical device:** real GNSS multipath/accuracy behavior, camera
+follow feel, on-road reroute latency end-to-end, MapLibre rendering on target GPUs, tile
+behavior under flaky cellular networks, and background/foreground transitions during an
+active ride. The current-location pointer is **not** proof that turn navigation or
+rerouting is correct.
 
 ## Future ESP32 integration
 

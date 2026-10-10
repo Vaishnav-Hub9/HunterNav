@@ -47,6 +47,13 @@ class MapController(private val context: Context, private val mapView: MapView) 
     private var styleReady = false
     private var navPadding: IntArray? = null
 
+    // Last content the screen asked to draw. Sources only exist once the style is loaded, so
+    // without this cache a route that arrives BEFORE the style finishes loading (fast fetch / slow
+    // network) would be dropped and the preview would show an empty map until the next state change.
+    private var lastRoute: Route? = null
+    private var lastRouteProgress: Pair<Route, Int>? = null
+    private var lastDestination: Coordinate? = null
+
     // Style-load failure reporting (spec §1: a broken map must show a user-visible error).
     private var onStyleReady: (() -> Unit)? = null
     private var onStyleError: ((String) -> Unit)? = null
@@ -196,6 +203,10 @@ class MapController(private val context: Context, private val mapView: MapView) 
                 PropertyFactory.circleStrokeColor(Color.WHITE),
             ),
         )
+
+        // (Re)apply anything drawn before the style was ready.
+        applyDestination()
+        if (lastRouteProgress != null) applyRouteProgress() else applyRoute()
     }
 
     /** Renders the current-location pointer. No-op until the style has loaded. */
@@ -205,9 +216,16 @@ class MapController(private val context: Context, private val mapView: MapView) 
         )
     }
 
-    /** Renders the full route (preview mode). */
+    /** Renders the full route (preview mode). Safe to call before the style has loaded. */
     fun showRoute(route: Route?) {
+        lastRoute = route
+        lastRouteProgress = null
+        applyRoute()
+    }
+
+    private fun applyRoute() {
         val source = routeSource ?: return
+        val route = lastRoute
         if (route == null || route.geometry.isEmpty()) {
             source.setGeoJson(FeatureCollection.fromFeatures(emptyList()))
         } else {
@@ -222,6 +240,14 @@ class MapController(private val context: Context, private val mapView: MapView) 
      * dims. [snappedIndex] is the user's vertex index in the route geometry.
      */
     fun showRouteProgress(route: Route, snappedIndex: Int) {
+        lastRoute = route
+        lastRouteProgress = route to snappedIndex
+        applyRouteProgress()
+    }
+
+    private fun applyRouteProgress() {
+        val source = routeSource ?: return
+        val (route, snappedIndex) = lastRouteProgress ?: return
         val geometry = route.geometry
         if (geometry.isEmpty()) return
         val toPoint: (Coordinate) -> Point = { Point.fromLngLat(it.longitude, it.latitude) }
@@ -242,7 +268,13 @@ class MapController(private val context: Context, private val mapView: MapView) 
     }
 
     fun showDestination(coordinate: Coordinate?) {
+        lastDestination = coordinate
+        applyDestination()
+    }
+
+    private fun applyDestination() {
         val source = destinationSource ?: return
+        val coordinate = lastDestination
         if (coordinate == null) {
             source.setGeoJson(FeatureCollection.fromFeatures(emptyList()))
         } else {

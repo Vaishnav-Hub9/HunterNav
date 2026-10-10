@@ -4,7 +4,9 @@ import com.hunternav.core.result.AppErrorKind
 import com.hunternav.core.result.AppResult
 import com.hunternav.core.result.toAppErrorKind
 import com.hunternav.core.util.DebugLog
+import com.hunternav.data.network.HttpTransport
 import com.hunternav.data.network.NetworkClient
+import com.hunternav.data.network.RequestRateLimiter
 import com.hunternav.domain.model.Coordinate
 import com.hunternav.domain.model.Destination
 import com.hunternav.domain.repository.GeocodingProvider
@@ -16,22 +18,53 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Nominatim-based geocoder (low-volume OSM service, development use).
- * The base URL is configurable via BuildConfig for self-hosting later.
- * Usage policy: identify with a User-Agent, keep volume low, no bulk queries.
+ *
+ * Usage-policy compliance (spec §5):
+ *  - one app-wide rate limiter: at most 1 request/second across search AND reverse,
+ *  - successful searches are cached briefly so repeated queries never hit the network,
+ *  - identified with a User-Agent, requests only what the caller explicitly submits,
+ *  - the base URL is configurable via BuildConfig for self-hosting later.
+ *
+ * Callers must NOT pass live GPS coordinates ([near]) for ordinary text search — the
+ * viewbox hint is only for the rare case where proximity is genuinely required, and the
+ * production search path does not use it.
  */
 class NominatimGeocodingProvider(
     private val baseUrl: String,
-    private val networkClient: NetworkClient = NetworkClient(),
+    private val networkClient: HttpTransport = NetworkClient(),
+    private val rateLimiter: RequestRateLimiter = RequestRateLimiter(MIN_REQUEST_INTERVAL_MS),
+    private val nowMs: () -> Long = System::currentTimeMillis,
+    private val cacheTtlMs: Long = CACHE_TTL_MS,
+    private val cacheMaxEntries: Int = CACHE_MAX_ENTRIES,
 ) : GeocodingProvider {
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
+    private val requestSeq = AtomicInteger(0)
+
+    /** Query → (fetched-at, results). Synchronized: reads/writes are O(1) and never block IO. */
+    private val searchCache = LinkedHashMap<String, CachedSearch>(cacheMaxEntries, 0.75f, true)
+
+    private data class CachedSearch(val fetchedAtMs: Long, val results: List<Destination>)
 
     override suspend fun search(query: String, near: Coordinate?, limit: Int): AppResult<List<Destination>> {
         if (query.isBlank()) return AppResult.Success(emptyList())
+        val normalized = query.trim().lowercase()
 
+        // Cache hit: repeated queries are answered locally (policy: cache repeated queries).
+        synchronized(searchCache) {
+            val cached = searchCache[normalized]
+            if (cached != null && nowMs() - cached.fetchedAtMs <= cacheTtlMs) {
+                DebugLog.d("GEOCODING_RESULT", "source=search cache=hit query=\"$normalized\" count=${cached.results.size}")
+                return AppResult.Success(cached.results)
+            }
+        }
+
+        val requestId = requestSeq.incrementAndGet()
+        val startedAt = nowMs()
         val url = baseUrl.trimEnd('/').toHttpUrl().newBuilder()
             .addPathSegment("search")
             .addQueryParameter("q", query)
@@ -39,7 +72,7 @@ class NominatimGeocodingProvider(
             .addQueryParameter("addressdetails", "1")
             .addQueryParameter("limit", limit.coerceIn(1, 20).toString())
             .apply {
-                // Viewbox + bounded keeps results near the rider without excluding the rest of the world.
+                // Optional proximity hint ONLY when the caller explicitly supplies one.
                 if (near != null) {
                     val dLat = 0.7
                     val dLon = 0.7
@@ -48,40 +81,50 @@ class NominatimGeocodingProvider(
             }
             .build()
 
-        val request = Request.Builder()
-            .url(url)
-            .header("User-Agent", NetworkClient.USER_AGENT)
-            .get()
-            .build()
-
         DebugLog.d(
             "GEOCODING_REQUEST",
-            "source=search query=\"$query\" " +
-                "near=${near?.let { "${it.latitude},${it.longitude}" } ?: "none"} limit=$limit",
+            "req=$requestId source=search query=\"$query\" near=${if (near != null) "supplied" else "none"} limit=$limit",
         )
 
         return try {
-            networkClient.execute(request).use { response ->
-                if (!response.isSuccessful) {
-                    DebugLog.d("GEOCODING_RESULT", "source=search failed http=${response.code}")
-                    AppResult.Failure(AppErrorKind.SERVER, "HTTP ${response.code}")
-                } else {
-                    val body = response.body.string()
-                    if (body.isBlank()) {
-                        DebugLog.d("GEOCODING_RESULT", "source=search failed reason=empty_body")
-                        AppResult.Failure(AppErrorKind.PARSE, "Empty response body")
+            rateLimiter.withPermit {
+                val request = Request.Builder()
+                    .url(url)
+                    .header("User-Agent", NetworkClient.USER_AGENT)
+                    .get()
+                    .build()
+                networkClient.execute(request).use { response ->
+                    if (!response.isSuccessful) {
+                        DebugLog.d("GEOCODING_RESULT", "req=$requestId source=search failed http=${response.code} elapsed_ms=${nowMs() - startedAt}")
+                        AppResult.Failure(AppErrorKind.SERVER, "HTTP ${response.code}")
                     } else {
-                        parseSearch(body).also { r ->
-                            DebugLog.d(
-                                "GEOCODING_RESULT",
+                        val body = response.body.string()
+                        if (body.isBlank()) {
+                            DebugLog.d("GEOCODING_RESULT", "req=$requestId source=search failed reason=empty_body")
+                            AppResult.Failure(AppErrorKind.PARSE, "Empty response body")
+                        } else {
+                            parseSearch(body).also { r ->
                                 if (r is AppResult.Success) {
-                                    "source=search ok count=${r.value.size} " +
-                                        "titles=${r.value.take(3).joinToString(" | ") { it.title }}"
-                                } else {
-                                    val f = r as AppResult.Failure
-                                    "source=search failed kind=${f.kind} message=${f.message}"
-                                },
-                            )
+                                    // Cache only real results; failures/no-results are not sticky.
+                                    synchronized(searchCache) {
+                                        if (searchCache.size >= cacheMaxEntries) {
+                                            val eldest = searchCache.entries.iterator()
+                                            if (eldest.hasNext()) eldest.next()
+                                        }
+                                        searchCache[normalized] = CachedSearch(nowMs(), r.value)
+                                    }
+                                }
+                                DebugLog.d(
+                                    "GEOCODING_RESULT",
+                                    if (r is AppResult.Success) {
+                                        "req=$requestId source=search ok count=${r.value.size} elapsed_ms=${nowMs() - startedAt} " +
+                                            "titles=${r.value.take(3).joinToString(" | ") { it.title }}"
+                                    } else {
+                                        val f = r as AppResult.Failure
+                                        "req=$requestId source=search failed kind=${f.kind} message=${f.message} elapsed_ms=${nowMs() - startedAt}"
+                                    },
+                                )
+                            }
                         }
                     }
                 }
@@ -91,13 +134,15 @@ class NominatimGeocodingProvider(
         } catch (e: Exception) {
             DebugLog.d(
                 "GEOCODING_RESULT",
-                "source=search exception=${e::class.simpleName} message=${e.message}",
+                "req=$requestId source=search exception=${e::class.simpleName} message=${e.message} elapsed_ms=${nowMs() - startedAt}",
             )
             AppResult.Failure(e.toAppErrorKind(), e.message, e)
         }
     }
 
     override suspend fun reverse(coordinate: Coordinate): AppResult<Destination> {
+        val requestId = requestSeq.incrementAndGet()
+        val startedAt = nowMs()
         val url = baseUrl.trimEnd('/').toHttpUrl().newBuilder()
             .addPathSegment("reverse")
             .addQueryParameter("lat", coordinate.latitude.toString())
@@ -106,39 +151,39 @@ class NominatimGeocodingProvider(
             .addQueryParameter("addressdetails", "1")
             .build()
 
-        val request = Request.Builder()
-            .url(url)
-            .header("User-Agent", NetworkClient.USER_AGENT)
-            .get()
-            .build()
-
         DebugLog.d(
             "GEOCODING_REQUEST",
-            "source=reverse lat=${coordinate.latitude} lon=${coordinate.longitude}",
+            "req=$requestId source=reverse lat=${coordinate.latitude} lon=${coordinate.longitude}",
         )
 
         return try {
-            networkClient.execute(request).use { response ->
-                if (!response.isSuccessful) {
-                    DebugLog.d("GEOCODING_RESULT", "source=reverse failed http=${response.code}")
-                    AppResult.Failure(AppErrorKind.SERVER, "HTTP ${response.code}")
-                } else {
-                    val body = response.body.string()
-                    if (body.isBlank()) {
-                        DebugLog.d("GEOCODING_RESULT", "source=reverse failed reason=empty_body")
-                        AppResult.Failure(AppErrorKind.PARSE, "Empty response body")
+            rateLimiter.withPermit {
+                val request = Request.Builder()
+                    .url(url)
+                    .header("User-Agent", NetworkClient.USER_AGENT)
+                    .get()
+                    .build()
+                networkClient.execute(request).use { response ->
+                    if (!response.isSuccessful) {
+                        DebugLog.d("GEOCODING_RESULT", "req=$requestId source=reverse failed http=${response.code} elapsed_ms=${nowMs() - startedAt}")
+                        AppResult.Failure(AppErrorKind.SERVER, "HTTP ${response.code}")
                     } else {
-                        parseReverse(body, coordinate).also { r ->
-                            DebugLog.d(
-                                "GEOCODING_RESULT",
-                                if (r is AppResult.Success) {
-                                    "source=reverse ok title=${r.value.title} " +
-                                        "coords=${r.value.coordinate.latitude},${r.value.coordinate.longitude}"
-                                } else {
-                                    val f = r as AppResult.Failure
-                                    "source=reverse failed kind=${f.kind} message=${f.message}"
-                                },
-                            )
+                        val body = response.body.string()
+                        if (body.isBlank()) {
+                            DebugLog.d("GEOCODING_RESULT", "req=$requestId source=reverse failed reason=empty_body")
+                            AppResult.Failure(AppErrorKind.PARSE, "Empty response body")
+                        } else {
+                            parseReverse(body, coordinate).also { r ->
+                                DebugLog.d(
+                                    "GEOCODING_RESULT",
+                                    if (r is AppResult.Success) {
+                                        "req=$requestId source=reverse ok title=${r.value.title} elapsed_ms=${nowMs() - startedAt}"
+                                    } else {
+                                        val f = r as AppResult.Failure
+                                        "req=$requestId source=reverse failed kind=${f.kind} message=${f.message} elapsed_ms=${nowMs() - startedAt}"
+                                    },
+                                )
+                            }
                         }
                     }
                 }
@@ -148,16 +193,13 @@ class NominatimGeocodingProvider(
         } catch (e: Exception) {
             DebugLog.d(
                 "GEOCODING_RESULT",
-                "source=reverse exception=${e::class.simpleName} message=${e.message}",
+                "req=$requestId source=reverse exception=${e::class.simpleName} message=${e.message} elapsed_ms=${nowMs() - startedAt}",
             )
             AppResult.Failure(e.toAppErrorKind(), e.message, e)
         }
     }
 
-    /**
-     * Parses a Nominatim `jsonv2` search array. Internal so unit tests can exercise the
-     * geocoder-result → Destination mapping (spec §18) without a network.
-     */
+    /** Parses a Nominatim `jsonv2` search array. Internal so unit tests can exercise it. */
     internal fun parseSearch(body: String): AppResult<List<Destination>> {
         return try {
             val arr = json.parseToJsonElement(body).jsonArray
@@ -215,5 +257,13 @@ class NominatimGeocodingProvider(
             title = name?.content ?: displayName.substringBefore(',').ifBlank { "Dropped pin" },
             subtitle = subtitle ?: displayName.substringAfter(',').trim().ifBlank { null },
         )
+    }
+
+    private companion object {
+        /** Public Nominatim policy: at most one request per second, app-wide. */
+        const val MIN_REQUEST_INTERVAL_MS = 1_000L
+        /** Successful search results are reused for a few minutes. */
+        const val CACHE_TTL_MS = 10 * 60 * 1_000L
+        const val CACHE_MAX_ENTRIES = 64
     }
 }

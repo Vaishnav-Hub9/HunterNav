@@ -41,6 +41,12 @@ data class NavigationState(
     val snappedCoordinate: Coordinate? = null,
     /** Index into [Route.geometry] of the user's snapped position; -1 when unknown. */
     val snappedGeometryIndex: Int = -1,
+    /**
+     * Monotonic identity of the active route: +1 every time a route is installed
+     * (navigation start or reroute replacement). Lets tests and observers detect route
+     * replacement instead of assuming the route object they saw is still active.
+     */
+    val routeVersion: Long = 0L,
 ) {
     fun toDisplayState(): DisplayNavigationState = DisplayNavigationState(
         latitude = currentLocation?.latitude ?: 0.0,

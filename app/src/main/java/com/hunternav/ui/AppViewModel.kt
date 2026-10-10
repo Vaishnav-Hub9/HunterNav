@@ -84,6 +84,24 @@ class AppViewModel(
     private var locationStartJob: Job? = null
     private var locationUpdatesJob: Job? = null
 
+    /**
+     * Trip identity: +1 whenever the destination changes or the trip is cleared. Every async
+     * operation captures the generation it started under and discards its result when the
+     * generation has moved on — a late response from trip N can never restore state into trip
+     * N+1 (spec §4/§6: stale responses must not overwrite a newer trip).
+     */
+    private var tripGeneration: Long = 0L
+    private var tripId: String = "-"
+
+    /** Destination of the in-flight route request (dedup: no duplicate concurrent fetches). */
+    private var pendingRouteDestination: Destination? = null
+
+    private fun bumpTrip(): Long {
+        tripGeneration += 1
+        tripId = tripGeneration.toString()
+        return tripGeneration
+    }
+
     init {
         viewModelScope.launch {
             engine.events.collect { event ->
@@ -119,6 +137,10 @@ class AppViewModel(
     fun stopBrowseTracking() {
         // Keep last fix; stop updates. Navigation restarts tracking when needed.
         if (_phase.value != AppPhase.NAVIGATING) {
+            // Cancel the pending start too — otherwise a start() still in flight could register
+            // a listener AFTER this stop() and leave a zombie callback running.
+            locationStartJob?.cancel()
+            locationStartJob = null
             locationProvider.stop()
             locationUpdatesJob?.cancel()
             locationUpdatesJob = null
@@ -176,8 +198,11 @@ class AppViewModel(
         _destination.value = destination
         if (previous != null && previous.coordinate == destination.coordinate) return
 
+        // New trip identity: any in-flight request/label lookup from the old trip is now stale.
+        bumpTrip()
         routeJob?.cancel()
         routeJob = null
+        pendingRouteDestination = null
         _routes.value = emptyList()
         _selectedRoute.value = null
         _routeError.value = null
@@ -205,8 +230,12 @@ class AppViewModel(
             "vm=$vmTag lat=${coordinate.latitude} lon=${coordinate.longitude}",
         )
         setDestination(fallback)
+        val generationAtPress = tripGeneration
         viewModelScope.launch {
             val result = container.searchDestination.reverse(coordinate)
+            // Stale guard: if the user picked another destination (or the trip was cleared)
+            // while the reverse lookup was in flight, its label must not overwrite the new one.
+            if (generationAtPress != tripGeneration) return@launch
             if (result is com.hunternav.core.result.AppResult.Success) {
                 _destination.value = result.value.copy(
                     subtitle = result.value.subtitle ?: fallback.subtitle,
@@ -234,13 +263,16 @@ class AppViewModel(
             return
         }
         routeJob?.cancel()
+        val generation = tripGeneration
+        pendingRouteDestination = dest
         _isLoadingRoutes.value = true
         _routeError.value = null
         routeJob = viewModelScope.launch {
             val result = container.calculateRoutes(origin, dest.coordinate, alternatives = true)
             // Stale-response guard: a response for a destination the user has already
-            // changed must never overwrite the newer destination's route.
-            if (_destination.value != dest) return@launch
+            // changed (or a cleared trip) must never overwrite the newer state.
+            if (generation != tripGeneration) return@launch
+            pendingRouteDestination = null
             _isLoadingRoutes.value = false
             when (result) {
                 is com.hunternav.core.result.AppResult.Success -> {
@@ -260,11 +292,16 @@ class AppViewModel(
     /**
      * Fetches routes for the current destination unless a successful result for that exact
      * destination already exists — used by Route Preview so returning to it with the same
-     * destination keeps its routes while a *new* destination always refetches.
+     * destination keeps its routes while a *new* destination always refetches. Identity is
+     * the COORDINATE (a late label upgrade must not trigger a needless refetch), and a request
+     * already in flight for this destination is never duplicated (repeated button taps).
      */
     fun ensureRoute() {
         val dest = _destination.value
-        if (dest != null && _routes.value.isNotEmpty() && _routesForDestination.value == dest) return
+        if (dest != null) {
+            if (_isLoadingRoutes.value && pendingRouteDestination?.coordinate == dest.coordinate) return
+            if (_routes.value.isNotEmpty() && _routesForDestination.value?.coordinate == dest.coordinate) return
+        }
         prepareRoute()
     }
 
@@ -278,8 +315,12 @@ class AppViewModel(
 
     /** Begins active navigation with the selected route. */
     fun startNavigation() {
+        // Double-tap guard: a second tap while already navigating must not restart the trip,
+        // reset the arrival latch or spawn another location pipeline.
+        if (_phase.value == AppPhase.NAVIGATING) return
         val route = _selectedRoute.value ?: return
         val initial = engine.state.value.currentLocation
+        DebugLog.d("NAVIGATION_STARTED", "vm=$vmTag trip=$tripId")
         locationStartJob?.cancel()
         locationUpdatesJob?.cancel()
         locationStartJob = viewModelScope.launch {
@@ -293,24 +334,38 @@ class AppViewModel(
         _phase.value = AppPhase.NAVIGATING
     }
 
-    fun cancelNavigation() {
+    /**
+     * Ends the active trip exactly once (cancel button, system back, or arrival Done):
+     * cancels route/location jobs, stops the engine, drops routes + destination + maneuver
+     * progress, and returns to [AppPhase.IDLE]. A subsequent trip can never reuse the prior
+     * destination, route, ETA, maneuver index or arrival state (spec §11).
+     */
+    private fun clearTrip(reason: String) {
+        DebugLog.d("NAVIGATION_STOPPED", "vm=$vmTag trip=$tripId reason=$reason")
+        bumpTrip()
+        routeJob?.cancel()
+        routeJob = null
+        pendingRouteDestination = null
+        _isLoadingRoutes.value = false
         engine.stopNavigation()
-        locationProvider.stop()
+        stopDemoSimulation()
+        locationStartJob?.cancel()
+        locationStartJob = null
         locationUpdatesJob?.cancel()
         locationUpdatesJob = null
+        locationProvider.stop()
+        _routes.value = emptyList()
+        _selectedRoute.value = null
+        _routesForDestination.value = null
+        _routeError.value = null
+        _destination.value = null
         _phase.value = AppPhase.IDLE
     }
 
+    fun cancelNavigation() = clearTrip(reason = "cancelled")
+
     /** Acknowledges arrival ("Done") and returns the app to idle. */
-    fun finishArrival() {
-        engine.stopNavigation()
-        locationProvider.stop()
-        locationUpdatesJob?.cancel()
-        locationUpdatesJob = null
-        _phase.value = AppPhase.IDLE
-        _routes.value = emptyList()
-        _selectedRoute.value = null
-    }
+    fun finishArrival() = clearTrip(reason = "arrived")
 
     // ---------------------------------------------------------------------
     // Demo mode (developer switch)
@@ -319,6 +374,7 @@ class AppViewModel(
     fun setDemoMode(enabled: Boolean) {
         if (_demoMode.value == enabled) return
         if (locationUpdatesJob?.isActive == true) locationProvider.stop()
+        if (!enabled) stopDemoSimulation()
         _demoMode.value = enabled
     }
 

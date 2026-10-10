@@ -62,6 +62,10 @@ class AndroidLocationProvider(
             _status.value = LocationSourceStatus.GpsDisabled
             return
         }
+        // A previous request may still be registered (browse → navigation, repeated starts).
+        // Removing it first guarantees exactly ONE active listener — a second, untracked
+        // callback would keep running after stop() and duplicate every location update.
+        stop()
 
         @SuppressLint("MissingPermission")
         try {
@@ -93,6 +97,9 @@ class AndroidLocationProvider(
             _status.value = LocationSourceStatus.TemporarilyUnavailable(e.message)
         } catch (e: IllegalStateException) {
             _status.value = LocationSourceStatus.TemporarilyUnavailable(e.message)
+        } catch (e: SecurityException) {
+            // Permission revoked mid-session (e.g. from system settings).
+            _status.value = LocationSourceStatus.PermissionDenied
         }
     }
 

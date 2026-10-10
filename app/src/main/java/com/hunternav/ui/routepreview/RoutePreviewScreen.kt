@@ -208,7 +208,7 @@ fun RoutePreviewScreen(
                         MetricColumn("Estimated time", FormatUtils.duration(route.durationSeconds), Modifier.weight(1f))
                         VerticalDivider()
                         MetricColumn(
-                            "Arrival",
+                            "Arrival (est.)",
                             FormatUtils.eta(route.durationSeconds, System.currentTimeMillis()),
                             Modifier.weight(1f),
                         )

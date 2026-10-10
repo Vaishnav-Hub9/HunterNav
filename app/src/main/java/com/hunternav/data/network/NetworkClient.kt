@@ -12,7 +12,7 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /** Central HTTP client: timeouts, cancellation, one shared connection pool. */
-class NetworkClient {
+class NetworkClient : HttpTransport {
 
     val okHttpClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -22,7 +22,7 @@ class NetworkClient {
         .build()
 
     /** Executes [request] asynchronously, resuming the coroutine with the response. */
-    suspend fun execute(request: Request): Response = suspendCancellableCoroutine { cont ->
+    override suspend fun execute(request: Request): Response = suspendCancellableCoroutine { cont ->
         val call = okHttpClient.newCall(request)
         cont.invokeOnCancellation { call.cancel() }
         call.enqueue(object : Callback {

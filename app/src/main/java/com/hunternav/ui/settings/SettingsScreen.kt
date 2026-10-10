@@ -133,6 +133,24 @@ fun SettingsScreen(
             }
 
             SettingsCard {
+                Text("Privacy & services", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "No accounts, no analytics, no crash reporting.\n\n" +
+                        "• Map tiles (OpenFreeMap) see which map areas are displayed.\n" +
+                        "• Place search (Nominatim) sees your search text — never your GPS location.\n" +
+                        "• Routing (OSRM) receives your origin and destination coordinates.\n" +
+                        "• Your location stays on this device; precise-location diagnostics are " +
+                        "written only to Logcat in debug builds.\n\n" +
+                        "These third-party services can see these requests — they are not hidden.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = InkSecondary,
+                )
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            SettingsCard {
                 Text("About & attribution", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(6.dp))
                 Text(

@@ -38,6 +38,14 @@ data class NavigationEngineConfig(
     val minDeviationMovementMeters: Double = 30.0,
     /** Minimum interval (ms) between reroute requests. */
     val rerouteCooldownMs: Long = 15_000L,
+    /**
+     * Remaining distance is clamped against small increases: GPS noise can snap the rider a
+     * few meters backward, which would make "remaining" jump up. Increases below this
+     * tolerance are ignored; a genuine backtrack (larger than this) is accepted.
+     */
+    val remainingJitterToleranceMeters: Double = 40.0,
+    /** Same noise clamp for the remaining-duration estimate (spec §9). */
+    val durationJitterToleranceSeconds: Double = 30.0,
 )
 
 /** Domain-level navigation events surfaced to the UI (never raw exceptions). */
@@ -101,6 +109,10 @@ class NavigationEngine(
     private var lastRerouteRequestMs: Long? = null
     private var activeRerouteJob: Job? = null
 
+    // Previous remaining metrics for the ACTIVE route (GPS-noise jitter clamp, spec §9).
+    private var lastRemainingDistance: Double? = null
+    private var lastRemainingDuration: Double? = null
+
     /** Begins navigating an already-fetched route. */
     @Synchronized
     fun startNavigation(route: Route, initialLocation: LocationData?, arrivalDestination: Coordinate? = null) {
@@ -114,13 +126,18 @@ class NavigationEngine(
         if (arrivalDestination != null) tripDestination = arrivalDestination
         destination = tripDestination ?: route.geometry.lastOrNull()
         tracker.reset()
+        lastRemainingDistance = null
+        lastRemainingDuration = null
         geometrySuffixMeters = buildSuffixDistances(route.geometry)
         stepEndIndices = buildStepEndIndices(route)
 
-        _state.value = NavigationState.idle().copy(activeRoute = route)
+        _state.value = NavigationState.idle().copy(
+            activeRoute = route,
+            routeVersion = _state.value.routeVersion + 1,
+        )
         DebugLog.d(
             "NAVIGATION_STARTED",
-            "distance_m=${route.distanceMeters} duration_s=${route.durationSeconds} " +
+            "route_v=${_state.value.routeVersion} distance_m=${route.distanceMeters} duration_s=${route.durationSeconds} " +
                 "geometry_points=${route.geometry.size} steps=${stepEndIndices.size}",
         )
         if (initialLocation != null) onLocationUpdate(initialLocation)
@@ -138,6 +155,8 @@ class NavigationEngine(
         destination = null
         tripDestination = null
         lastRerouteRequestMs = null
+        lastRemainingDistance = null
+        lastRemainingDuration = null
         val previousRoute = _state.value.activeRoute
         _state.value = NavigationState.idle().copy(
             currentLocation = _state.value.currentLocation,
@@ -203,6 +222,18 @@ class NavigationEngine(
         val arrival = evaluateArrival(location, route)
         val offRouteNow = evaluateOffRoute(location, snap.offRouteDistanceMeters, arrival)
 
+        // Spec §9: small backward GPS snaps must not make "remaining" jump upward — only a
+        // genuine return to an earlier portion of the route (increase beyond the tolerance)
+        // is allowed to show a larger value.
+        val remainingDistance = clampJitter(
+            snap.remainingDistanceMeters, lastRemainingDistance, config.remainingJitterToleranceMeters,
+        )
+        val remainingDuration = clampJitter(
+            snap.remainingDurationSeconds, lastRemainingDuration, config.durationJitterToleranceSeconds,
+        )
+        lastRemainingDistance = remainingDistance
+        lastRemainingDuration = remainingDuration
+
         _state.value = current.copy(
             currentLocation = location,
             currentBearing = bearing,
@@ -210,8 +241,8 @@ class NavigationEngine(
             currentStep = currentStep,
             nextStep = nextStep,
             distanceToNextManeuver = distanceToManeuver,
-            remainingDistance = snap.remainingDistanceMeters,
-            remainingDuration = snap.remainingDurationSeconds,
+            remainingDistance = remainingDistance,
+            remainingDuration = remainingDuration,
             offRoute = offRouteNow,
             destinationReached = arrival,
             snappedCoordinate = snap.snapped,
@@ -378,6 +409,10 @@ class NavigationEngine(
             runCatching { output.onNavigationStateChanged(display) }
         }
     }
+
+    /** Keeps [previous] when [next] grew by less than [tolerance] (GPS-noise backtrack). */
+    private fun clampJitter(next: Double, previous: Double?, tolerance: Double): Double =
+        if (previous != null && next > previous && next - previous < tolerance) previous else next
 
     private fun allSteps(route: Route): List<com.hunternav.domain.model.RouteStep> = route.legs.flatMap { it.steps }
 
