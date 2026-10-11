@@ -11,7 +11,9 @@ import com.hunternav.domain.model.Coordinate
 import com.hunternav.domain.model.Route
 import com.hunternav.domain.repository.RoutingProvider
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
@@ -90,7 +92,7 @@ class OsrmRoutingProvider(
 
         var lastFailure: AppResult.Failure = AppResult.Failure(AppErrorKind.UNKNOWN, "Routing failed")
         for (attempt in 1..maxAttempts) {
-            val outcome = attemptRequest(url, requestId)
+            val outcome = attemptRequest(url, requestId, startedAt)
             val result = outcome.result
             if (result is AppResult.Success) {
                 DebugLog.d(
@@ -123,8 +125,12 @@ class OsrmRoutingProvider(
         return lastFailure
     }
 
-    /** One HTTP round-trip: executes, classifies and parses/validates the response. */
-    private suspend fun attemptRequest(url: String, requestId: Int): Attempt = try {
+    /**
+     * One HTTP round-trip: executes, classifies and parses/validates the response. Parsing and
+     * validation run on [Dispatchers.Default] — JSON-decoding a multi-thousand-point geometry on
+     * the caller's thread (the main thread for preview fetches) was a real jank source.
+     */
+    private suspend fun attemptRequest(url: String, requestId: Int, startedAtMs: Long): Attempt = try {
         rateLimiter.withPermit {
             val request = Request.Builder()
                 .url(url)
@@ -152,7 +158,7 @@ class OsrmRoutingProvider(
                     if (body.isBlank()) {
                         Attempt(AppResult.Failure(AppErrorKind.PARSE, "Empty response body"), retryable = false)
                     } else {
-                        parseAndValidate(body, requestId)
+                        withContext(Dispatchers.Default) { parseAndValidate(body, requestId, startedAtMs) }
                     }
                 }
             }
@@ -172,7 +178,7 @@ class OsrmRoutingProvider(
      * finite distance/duration and maneuver steps. Failures are never replaced with
      * sample data.
      */
-    private fun parseAndValidate(body: String, requestId: Int): Attempt {
+    private fun parseAndValidate(body: String, requestId: Int, startedAtMs: Long): Attempt {
         val dto = try {
             json.decodeFromString(OsrmResponseDto.serializer(), body)
         } catch (e: Exception) {
@@ -209,7 +215,7 @@ class OsrmRoutingProvider(
         val lastPoint = first.geometry.lastOrNull()
         DebugLog.d(
             "ROUTE_PARSE_SUCCESS",
-            "req=$requestId routes=${valid.size}/${dto.routes.size} " +
+            "req=$requestId elapsed_ms=${nowMs() - startedAtMs} routes=${valid.size}/${dto.routes.size} " +
                 "distance_m=${first.distanceMeters} duration_s=${first.durationSeconds} " +
                 "steps=${first.legs.sumOf { it.steps.size }} " +
                 "first_pt=${firstPoint?.let { "${it.longitude},${it.latitude}" } ?: "n/a"} " +

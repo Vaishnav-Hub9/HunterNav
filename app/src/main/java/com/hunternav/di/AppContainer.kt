@@ -29,15 +29,20 @@ class AppContainer(
     context: Context,
     routingProviderOverride: RoutingProvider? = null,
     geocodingProviderOverride: GeocodingProvider? = null,
+    engineScopeOverride: CoroutineScope? = null,
+    engineNowMsOverride: (() -> Long)? = null,
 ) {
 
-    val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val appScope = engineScopeOverride ?: CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private val networkClient = NetworkClient()
 
+    /** Tighter timeouts for routing (spec P2): hung reroutes must fail fast and retry. */
+    private val routingNetworkClient = NetworkClient(routing = true)
+
     val routingProvider: RoutingProvider = routingProviderOverride ?: OsrmRoutingProvider(
         baseUrl = BuildConfig.OSRM_BASE_URL,
-        networkClient = networkClient,
+        networkClient = routingNetworkClient,
     )
 
     val geocodingProvider: GeocodingProvider = geocodingProviderOverride ?: NominatimGeocodingProvider(
@@ -57,5 +62,6 @@ class AppContainer(
         routingProvider = routingProvider,
         config = NavigationEngineConfig(),
         scope = appScope,
+        nowMs = engineNowMsOverride ?: System::currentTimeMillis,
     )
 }

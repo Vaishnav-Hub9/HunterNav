@@ -584,6 +584,28 @@ class NavigationEngineTest {
         assertEquals("the replacement route must bump the version", 2L, engine.state.value.routeVersion)
     }
 
+    @Test
+    fun `reroute pipeline commits within the latency target when the provider responds promptly`() = runTest {
+        val routing = FakeRoutingProvider(baseRoute())
+        var now = 0L
+        val engine = engine(routing, { now })
+
+        engine.startNavigation(baseRoute(), fix(17.3850, 78.4867, 0))
+        now = 1_000
+        engine.onLocationUpdate(fix(17.3855, 78.4877, now)) // deviation candidate starts
+        now = 6_000
+        engine.onLocationUpdate(fix(17.3855, 78.4877, now)) // sustained → latch → reroute
+
+        // The provider responds immediately, so detection → request → validation → commit
+        // must complete in the same tick: no artificial delay, no extra cooldown wait.
+        assertEquals(1, routing.callCount)
+        assertFalse("reroute flag must be cleared after commit", engine.state.value.rerouting)
+        assertEquals("the replacement route must be committed", 2L, engine.state.value.routeVersion)
+        assertEquals(baseRoute(), engine.state.value.activeRoute)
+        assertTrue("the rider is off the new route's head but metrics must be live",
+            engine.state.value.remainingDistance > 0.0)
+    }
+
     private fun TestScope.engine(routing: RoutingProvider, clock: () -> Long) = NavigationEngine(
         routingProvider = routing,
         config = config,

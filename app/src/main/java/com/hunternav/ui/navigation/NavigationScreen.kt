@@ -48,10 +48,14 @@ import com.hunternav.ui.components.ManeuverIcon
 import com.hunternav.ui.components.MapLoadErrorOverlay
 import com.hunternav.ui.components.PillChip
 import com.hunternav.ui.components.StatusRibbon
+import com.hunternav.core.util.DebugLog
+import com.hunternav.core.util.angleDelta
+import com.hunternav.domain.model.Coordinate
 import com.hunternav.ui.map.HunterNavMapView
 import com.hunternav.ui.map.MapController
 import com.hunternav.ui.map.NavigationCameraController
 import com.hunternav.ui.map.NavigationZoomPolicy
+import com.hunternav.ui.map.RenderThrottle
 import com.hunternav.ui.theme.Cobalt
 import com.hunternav.ui.theme.IvoryElevated
 import kotlinx.coroutines.delay
@@ -97,22 +101,47 @@ fun NavigationScreen(
 
     val route = navState.activeRoute
 
-    // Camera follow loop: NavigationCameraController decides zoom via NavigationZoomPolicy;
-    // MapController no-ops outside FOLLOW so user gestures stay in FREE mode.
+    // Camera/marker follow loop (spec P1: severe map lag on mid-range devices).
+    // NavigationCameraController decides zoom via NavigationZoomPolicy; MapController no-ops
+    // outside FOLLOW so user gestures stay in FREE mode. Each 500 ms tick now does real work
+    // only when the rider actually moved/turned, and the route line is re-published only when
+    // the snapped vertex (or route) changed — identical setGeoJson calls were the dominant
+    // main-thread cost during rides.
     LaunchedEffect(mapController, route) {
         if (mapController == null || route == null) return@LaunchedEffect
+        var lastCameraCoordinate: Coordinate? = null
+        var lastCameraBearing = Double.NaN
+        var lastPublishedVersion = -1L
+        var lastPublishedVertex = Int.MIN_VALUE
         while (true) {
             val state = viewModel.engine.state.value
             state.currentLocation?.let { location ->
-                mapController?.showUserLocation(location)
-                cameraController?.onNavigationTick(
-                    location = location,
-                    bearing = state.currentBearing,
-                    distanceToManeuverMeters = state.distanceToNextManeuver,
-                )
-                mapController?.showRouteProgress(route, state.snappedGeometryIndex)
+                val bearingChanged = lastCameraBearing.isNaN() ||
+                    kotlin.math.abs(angleDelta(lastCameraBearing, state.currentBearing)) >= RenderThrottle.CAMERA_MIN_BEARING_DELTA_DEGREES
+                if (RenderThrottle.movedEnough(lastCameraCoordinate, location.coordinate) || bearingChanged) {
+                    mapController?.showUserLocation(location)
+                    cameraController?.onNavigationTick(
+                        location = location,
+                        bearing = state.currentBearing,
+                        distanceToManeuverMeters = state.distanceToNextManeuver,
+                    )
+                    lastCameraCoordinate = location.coordinate
+                    lastCameraBearing = state.currentBearing
+                }
             }
-            delay(500)
+            if (state.routeVersion != lastPublishedVersion || state.snappedGeometryIndex != lastPublishedVertex) {
+                mapController?.showRouteProgress(route, state.snappedGeometryIndex)
+                if (state.routeVersion != lastPublishedVersion) {
+                    // Stage 7 of the reroute pipeline (spec P2): the new route is on screen.
+                    DebugLog.d(
+                        "ROUTE_RENDERED",
+                        "route_v=${state.routeVersion} vertex=${state.snappedGeometryIndex}",
+                    )
+                    lastPublishedVersion = state.routeVersion
+                }
+                lastPublishedVertex = state.snappedGeometryIndex
+            }
+            delay(NAV_TICK_MS)
         }
     }
 
@@ -210,10 +239,18 @@ fun NavigationScreen(
             }
         }
 
-        // Rerouting / off-route ribbon
+        // Rerouting / off-route / reroute-failure ribbon (spec P2: never look frozen).
+        val rerouteError by viewModel.rerouteError.collectAsState()
         when {
             navState.rerouting -> StatusRibbon(
                 text = "Rerouting…",
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(top = 118.dp),
+            )
+            rerouteError != null -> StatusRibbon(
+                text = rerouteError!!,
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .statusBarsPadding()
@@ -346,6 +383,9 @@ fun NavigationScreen(
 }
 
 
+
+/** Navigation tick period (ms). Work per tick is gated by [RenderThrottle]. */
+private const val NAV_TICK_MS = 500L
 
 @Composable
 private fun BottomMetric(label: String, value: String, modifier: Modifier = Modifier) {

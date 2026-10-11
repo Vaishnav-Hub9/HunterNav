@@ -19,9 +19,11 @@ import com.hunternav.domain.model.LocationData
 import com.hunternav.domain.model.Route
 import com.hunternav.domain.navigation.NavigationEngine
 import com.hunternav.domain.navigation.NavigationEvent
+import com.hunternav.domain.model.SupportedRegion
 import com.hunternav.domain.repository.LocationProvider
 import com.hunternav.domain.repository.LocationSourceStatus
 import com.hunternav.ui.map.MapController
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -74,6 +76,11 @@ class AppViewModel(
     private val _mapReady = MutableStateFlow(false)
     val mapReady: StateFlow<Boolean> = _mapReady.asStateFlow()
 
+    /** Transient reroute-failure message (spec P2: never look frozen while off route). */
+    private val _rerouteError = MutableStateFlow<String?>(null)
+    val rerouteError: StateFlow<String?> = _rerouteError.asStateFlow()
+    private var rerouteErrorToken = 0L
+
     /** Location provider currently in use (real GPS or demo simulator). */
     val locationProvider: LocationProvider get() = if (_demoMode.value) container.fakeLocationProvider else container.realLocationProvider
 
@@ -108,6 +115,17 @@ class AppViewModel(
                 when (event) {
                     is NavigationEvent.ArrivedAtDestination -> {
                         if (_phase.value == AppPhase.NAVIGATING) _phase.value = AppPhase.ARRIVED
+                    }
+                    is NavigationEvent.RerouteFailed -> {
+                        // Surface the failure briefly; the engine keeps the last valid route and
+                        // retries after its cooldown. Auto-clears so the ribbon cannot stick.
+                        _rerouteError.value = "Reroute failed — check connection"
+                        rerouteErrorToken += 1
+                        val token = rerouteErrorToken
+                        viewModelScope.launch {
+                            delay(REROUTE_ERROR_VISIBLE_MS)
+                            if (rerouteErrorToken == token) _rerouteError.value = null
+                        }
                     }
                     else -> Unit
                 }
@@ -176,6 +194,16 @@ class AppViewModel(
     // ---------------------------------------------------------------------
 
     fun onDestinationSelected(destination: Destination) {
+        // Spec P3: the supported area is Telangana — reject anything else with a clear message
+        // BEFORE any route request can be created.
+        if (!SupportedRegion.isSupported(destination.coordinate)) {
+            DebugLog.d(
+                "DESTINATION_OUTSIDE_REGION",
+                "vm=$vmTag trip=$tripId lat=${destination.coordinate.latitude} lon=${destination.coordinate.longitude}",
+            )
+            _routeError.value = SupportedRegion.unsupportedDestinationMessage(destination.title)
+            return
+        }
         DebugLog.d(
             "DESTINATION_SELECTED",
             "vm=$vmTag title=${destination.title} subtitle=${destination.subtitle}",
@@ -216,6 +244,10 @@ class AppViewModel(
 
     /** Long-press on map: pin immediately, upgrade the label if reverse geocoding succeeds. */
     fun onMapLongPress(coordinate: Coordinate) {
+        if (!SupportedRegion.isSupported(coordinate)) {
+            _routeError.value = SupportedRegion.unsupportedDestinationMessage(null)
+            return
+        }
         val fallback = Destination(
             coordinate = coordinate,
             title = "Dropped pin",
@@ -254,6 +286,12 @@ class AppViewModel(
         if (dest == null) {
             // Was a silent `return`, which left Route Preview showing "—" with no explanation.
             _routeError.value = "Destination lookup failed. Choose a destination and try again."
+            return
+        }
+        // Defensive region check (spec P3): no route request ever leaves the app for an
+        // out-of-area destination, regardless of how it was selected.
+        if (!SupportedRegion.isSupported(dest.coordinate)) {
+            _routeError.value = SupportedRegion.unsupportedDestinationMessage(dest.title)
             return
         }
         val origin = engine.state.value.currentLocation?.coordinate
@@ -413,6 +451,7 @@ class AppViewModel(
 
     private companion object {
         const val DEMO_SPEED_MPS = 12.0
+        const val REROUTE_ERROR_VISIBLE_MS = 4_000L
     }
 }
 

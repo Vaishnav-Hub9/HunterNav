@@ -12,13 +12,17 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /** Central HTTP client: timeouts, cancellation, one shared connection pool. */
-class NetworkClient : HttpTransport {
+class NetworkClient(routing: Boolean = false) : HttpTransport {
 
+    // Routing requests get tighter bounds than geocoding (spec P2): a hung reroute must fail
+    // fast so the engine's cooldown can retry, instead of the rider waiting on a 20 s+ timeout.
+    // Worst case with 2 retries + backoff: ~3 × 12 s + 2.1 s ≈ 38 s, with a visible
+    // "Rerouting…"/failure ribbon the whole time.
     val okHttpClient: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
-        .writeTimeout(10, TimeUnit.SECONDS)
-        .callTimeout(20, TimeUnit.SECONDS)
+        .connectTimeout(if (routing) 5 else 10, TimeUnit.SECONDS)
+        .readTimeout(if (routing) 10 else 15, TimeUnit.SECONDS)
+        .writeTimeout(if (routing) 10 else 10, TimeUnit.SECONDS)
+        .callTimeout(if (routing) 12 else 20, TimeUnit.SECONDS)
         .build()
 
     /** Executes [request] asynchronously, resuming the coroutine with the response. */

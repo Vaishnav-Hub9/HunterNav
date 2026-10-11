@@ -46,6 +46,7 @@ class MapController(private val context: Context, private val mapView: MapView) 
     private var cameraMode: CameraMode = CameraMode.FOLLOW
     private var styleReady = false
     private var navPadding: IntArray? = null
+    private var cameraBoundsSet = false
 
     // Last content the screen asked to draw. Sources only exist once the style is loaded, so
     // without this cache a route that arrives BEFORE the style finishes loading (fast fetch / slow
@@ -53,6 +54,9 @@ class MapController(private val context: Context, private val mapView: MapView) 
     private var lastRoute: Route? = null
     private var lastRouteProgress: Pair<Route, Int>? = null
     private var lastDestination: Coordinate? = null
+
+    // Skips identical publishes (spec P1: setGeoJson is main-thread work per call).
+    private val throttle = RenderThrottle()
 
     // Style-load failure reporting (spec §1: a broken map must show a user-visible error).
     private var onStyleReady: (() -> Unit)? = null
@@ -103,6 +107,8 @@ class MapController(private val context: Context, private val mapView: MapView) 
 
     private fun startStyleLoad() {
         errorNotified = false
+        // New style ⇒ new sources: forget dedupe keys so everything is re-applied.
+        throttle.reset()
         if (!failListenerRegistered) {
             failListenerRegistered = true
             mapView.addOnDidFailLoadingMapListener { error ->
@@ -124,6 +130,18 @@ class MapController(private val context: Context, private val mapView: MapView) 
         mainHandler.postDelayed(styleWatchdog, STYLE_LOAD_TIMEOUT_MS)
 
         mapView.getMapAsync { map ->
+            // Keep the map in the supported operating area (spec P3): the camera cannot wander
+            // off Telangana, so a stray long-press cannot target the other side of the country.
+            if (!cameraBoundsSet) {
+                cameraBoundsSet = true
+                val tl = com.hunternav.domain.model.SupportedRegion.TELANGANA.padded(0.15)
+                map.setLatLngBoundsForCameraTarget(
+                    LatLngBounds.Builder()
+                        .include(LatLng(tl.minLatitude, tl.minLongitude))
+                        .include(LatLng(tl.maxLatitude, tl.maxLongitude))
+                        .build(),
+                )
+            }
             if (!cameraListenerRegistered) {
                 cameraListenerRegistered = true
                 map.addOnCameraMoveStartedListener(
@@ -209,8 +227,12 @@ class MapController(private val context: Context, private val mapView: MapView) 
         if (lastRouteProgress != null) applyRouteProgress() else applyRoute()
     }
 
-    /** Renders the current-location pointer. No-op until the style has loaded. */
+    /**
+     * Renders the current-location pointer. No-op until the style has loaded, and skipped
+     * when the position has not meaningfully changed (stationary rider / duplicate fixes).
+     */
     fun showUserLocation(location: LocationData) {
+        if (!throttle.shouldPublishUserLocation(location.latitude, location.longitude)) return
         userSource?.setGeoJson(
             Feature.fromGeometry(Point.fromLngLat(location.longitude, location.latitude)),
         )
@@ -226,6 +248,7 @@ class MapController(private val context: Context, private val mapView: MapView) 
     private fun applyRoute() {
         val source = routeSource ?: return
         val route = lastRoute
+        if (!throttle.shouldPublishRoute(route)) return
         if (route == null || route.geometry.isEmpty()) {
             source.setGeoJson(FeatureCollection.fromFeatures(emptyList()))
         } else {
@@ -250,6 +273,9 @@ class MapController(private val context: Context, private val mapView: MapView) 
         val (route, snappedIndex) = lastRouteProgress ?: return
         val geometry = route.geometry
         if (geometry.isEmpty()) return
+        // Re-publishing identical remaining/traveled lines every 500 ms tick is the single
+        // biggest main-thread cost during navigation — skip unless the vertex moved.
+        if (!throttle.shouldPublishProgress(route, snappedIndex)) return
         val toPoint: (Coordinate) -> Point = { Point.fromLngLat(it.longitude, it.latitude) }
 
         val remaining = if (snappedIndex in geometry.indices) geometry.subList(snappedIndex, geometry.size) else geometry
@@ -307,7 +333,11 @@ class MapController(private val context: Context, private val mapView: MapView) 
 
     fun cameraMode(): CameraMode = cameraMode
 
-    /** Follows the user with bearing rotation (FOLLOW mode). Ease without animation for tight tracking. */
+    /**
+     * Follows the user with bearing rotation (FOLLOW mode). Uses a short ease instead of an
+     * instant move: the tick loop already throttles on movement/heading change, and the small
+     * animation is what makes mid-range-device motion read smoothly instead of stuttering.
+     */
     fun follow(location: LocationData, bearing: Double, zoom: Double) {
         if (cameraMode != CameraMode.FOLLOW) return
         mapView.getMapAsync { map ->
@@ -316,7 +346,7 @@ class MapController(private val context: Context, private val mapView: MapView) 
                 .zoom(zoom)
                 .tilt(TILT_DEGREES)
             if (bearing in 1.0..359.0) builder.bearing(bearing)
-            map.moveCamera(CameraUpdateFactory.newCameraPosition(builder.build()))
+            map.easeCamera(CameraUpdateFactory.newCameraPosition(builder.build()), FOLLOW_EASE_MS)
         }
     }
 
@@ -351,5 +381,8 @@ class MapController(private val context: Context, private val mapView: MapView) 
 
         /** Style-load watchdog: blank map longer than this ⇒ surface a user-visible error. */
         const val STYLE_LOAD_TIMEOUT_MS = 12_000L
+
+        /** Short camera ease for follow mode; tick throttling keeps overlaps rare. */
+        const val FOLLOW_EASE_MS = 400
     }
 }

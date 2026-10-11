@@ -343,10 +343,11 @@ class NavigationEngine(
         if (activeRerouteJob?.isActive == true) return // never two concurrent reroutes
 
         lastRerouteRequestMs = now
+        val rerouteStartedAt = now
         _state.value = _state.value.copy(rerouting = true)
         DebugLog.d(
             "REROUTING_STARTED",
-            "from=${location.latitude},${location.longitude} dest=${dest.latitude},${dest.longitude}",
+            "at=$now from=${location.latitude},${location.longitude} dest=${dest.latitude},${dest.longitude}",
         )
         activeRerouteJob = scope.launch {
             val result = routingProvider.getRoutes(location.coordinate, dest, alternatives = false)
@@ -359,9 +360,11 @@ class NavigationEngine(
                         is com.hunternav.core.result.AppResult.Success -> {
                             val newRoute = result.value.firstOrNull()
                             if (newRoute != null) {
+                                // Stage 6 of the reroute pipeline (spec P2): validated and committed.
                                 DebugLog.d(
                                     "REROUTING_SUCCESS",
-                                    "distance_m=${newRoute.distanceMeters} duration_s=${newRoute.durationSeconds}",
+                                    "elapsed_ms=${nowMs() - rerouteStartedAt} " +
+                                        "distance_m=${newRoute.distanceMeters} duration_s=${newRoute.durationSeconds}",
                                 )
                                 startNavigation(newRoute, location)
                             } else {
@@ -371,7 +374,10 @@ class NavigationEngine(
                         }
                         is com.hunternav.core.result.AppResult.Failure -> {
                             // Keep the old route and off-route state; the UI shows a readable message.
-                            DebugLog.d("REROUTING_FAILURE", "kind=${result.kind} message=${result.message}")
+                            DebugLog.d(
+                                "REROUTING_FAILURE",
+                                "elapsed_ms=${nowMs() - rerouteStartedAt} kind=${result.kind} message=${result.message}",
+                            )
                             _events.tryEmit(NavigationEvent.RerouteFailed(result.kind))
                         }
                     }

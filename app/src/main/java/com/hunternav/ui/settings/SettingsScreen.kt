@@ -2,6 +2,7 @@ package com.hunternav.ui.settings
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -25,6 +26,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -33,15 +35,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.hunternav.ui.rememberAppViewModel
 import com.hunternav.BuildConfig
+import com.hunternav.data.offline.TelanganaOfflineMap
 import com.hunternav.di.AppContainer
 import com.hunternav.ui.AppViewModel
 import com.hunternav.ui.components.PillChip
+import com.hunternav.ui.components.PrimaryActionButton
 import com.hunternav.ui.theme.Cobalt
 import com.hunternav.ui.theme.InkSecondary
 import com.hunternav.ui.theme.Ivory
+import java.util.Locale
 
 /** Basic V1 settings: units, camera preference, map style placeholder, demo mode, attribution. */
 @Composable
@@ -133,6 +139,82 @@ fun SettingsScreen(
             }
 
             SettingsCard {
+                Text("Offline map (Hyderabad region)", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Download the area you ride so the map keeps rendering without a data " +
+                        "connection. OSM data © OpenStreetMap contributors (ODbL), served via " +
+                        "OpenFreeMap; stored on this device only.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = InkSecondary,
+                )
+                Spacer(Modifier.height(8.dp))
+
+                val context = LocalContext.current
+                val offlineMap = remember(context) { TelanganaOfflineMap(context.applicationContext) }
+                val offlineState by offlineMap.state.collectAsState()
+                val installedPreset by offlineMap.installedPreset.collectAsState()
+                var selectedPreset by remember {
+                    mutableStateOf(installedPreset ?: TelanganaOfflineMap.Preset.HYDERABAD)
+                }
+                LaunchedEffect(Unit) { offlineMap.refresh() }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TelanganaOfflineMap.Preset.entries.forEach { preset ->
+                        PillChip(
+                            "${preset.displayName} ${preset.sizeEstimate}",
+                            selectedPreset == preset,
+                            { selectedPreset = preset },
+                        )
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+
+                when (val state = offlineState) {
+                    is TelanganaOfflineMap.OfflineState.Checking ->
+                        Text("Checking offline maps…", style = MaterialTheme.typography.bodyMedium, color = InkSecondary)
+
+                    is TelanganaOfflineMap.OfflineState.Idle ->
+                        Text("Not downloaded yet. Estimates are for the zoom levels navigation needs.", style = MaterialTheme.typography.bodyMedium, color = InkSecondary)
+
+                    is TelanganaOfflineMap.OfflineState.Downloading ->
+                        Text(
+                            "Downloading… ${state.percent}% (${formatBytes(state.bytesDownloaded)})",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Cobalt,
+                        )
+
+                    is TelanganaOfflineMap.OfflineState.Ready ->
+                        Text(
+                            "Ready — ${installedPreset?.displayName ?: "region"} offline (${formatBytes(state.bytesDownloaded)}).",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Cobalt,
+                        )
+
+                    is TelanganaOfflineMap.OfflineState.Error ->
+                        Text(state.message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+                }
+
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PrimaryActionButton(
+                        text = "Download",
+                        enabled = offlineState !is TelanganaOfflineMap.OfflineState.Downloading,
+                        onClick = { offlineMap.startDownload(selectedPreset) },
+                        modifier = Modifier.weight(1f),
+                    )
+                    PrimaryActionButton(
+                        text = "Delete",
+                        enabled = installedPreset != null && offlineState !is TelanganaOfflineMap.OfflineState.Downloading,
+                        onClick = { offlineMap.deletePack() },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            SettingsCard {
                 Text("Privacy & services", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(6.dp))
                 Text(
@@ -170,6 +252,12 @@ fun SettingsScreen(
             }
         }
     }
+}
+
+private fun formatBytes(bytes: Long): String = when {
+    bytes >= 1_000_000_000L -> String.format(Locale.US, "%.1f GB", bytes / 1_000_000_000.0)
+    bytes >= 1_000_000L -> String.format(Locale.US, "%.0f MB", bytes / 1_000_000.0)
+    else -> "$bytes B"
 }
 
 @Composable

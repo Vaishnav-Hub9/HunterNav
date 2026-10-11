@@ -12,6 +12,7 @@ import com.hunternav.domain.model.RouteLeg
 import com.hunternav.domain.repository.GeocodingProvider
 import com.hunternav.domain.repository.RoutingProvider
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
@@ -96,6 +97,19 @@ class AppViewModelTest {
         }
     }
 
+    /** Router that succeeds once (initial fetch) and answers every later call with [afterwards]. */
+    private class FlakyRoutingProvider(
+        private val first: AppResult<List<Route>>,
+        private val afterwards: AppResult<List<Route>>,
+    ) : RoutingProvider {
+        var calls = 0
+        override suspend fun getRoutes(
+            origin: Coordinate,
+            destination: Coordinate,
+            alternatives: Boolean,
+        ): AppResult<List<Route>> = if (calls++ == 0) first else afterwards
+    }
+
     /** Reverse geocoder whose answer only arrives after the gate opens (stale-label test). */
     private class SlowReverseGeocoder(private val resultDestination: Destination) : GeocodingProvider {
         val gate = CompletableDeferred<Unit>()
@@ -141,7 +155,9 @@ class AppViewModelTest {
     private fun container(
         routing: RoutingProvider = FakeRoutingProvider(AppResult.Success(listOf(route()))),
         geocoder: GeocodingProvider = FakeGeocoder(),
-    ) = AppContainer(ContextWrapper(null), routing, geocoder)
+        engineScope: CoroutineScope? = null,
+        engineClock: (() -> Long)? = null,
+    ) = AppContainer(ContextWrapper(null), routing, geocoder, engineScope, engineClock)
 
     // -----------------------------------------------------------------
     // Destination selection (spec §3)
@@ -440,5 +456,79 @@ class AppViewModelTest {
         advanceUntilIdle()
 
         assertEquals("Charminar", vm.destination.value?.title)
+    }
+
+    // -----------------------------------------------------------------
+    // Regional boundary + reroute failure surfacing (reliability audit P2/P3)
+    // -----------------------------------------------------------------
+
+    @Test
+    fun `destination outside the supported region is rejected without any route request`() = runTest {
+        val routing = FakeRoutingProvider(AppResult.Success(listOf(route())))
+        val vm = AppViewModel(container(routing = routing))
+        val bangalore = Destination(Coordinate(12.9716, 77.5946), title = "Bangalore")
+
+        vm.engine.onLocationUpdate(location())
+        vm.onDestinationSelected(bangalore)
+        advanceUntilIdle()
+
+        // Rejection happens at selection time: the destination is never accepted, so no route
+        // request can be created even though the rider has a GPS fix.
+        assertEquals("no route request may leave the app for an out-of-region destination", 0, routing.calls)
+        assertNull(vm.destination.value)
+        val error = vm.routeError.value
+        assertNotNull(error)
+        assertTrue("unexpected message: $error", error!!.contains("supported area"))
+        assertTrue(vm.routes.value.isEmpty())
+        assertNull(vm.selectedRoute.value)
+    }
+
+    @Test
+    fun `map long press outside the region is rejected with a message`() = runTest {
+        val vm = AppViewModel(container())
+
+        vm.onMapLongPress(Coordinate(28.6139, 77.2090)) // Delhi
+
+        assertNull(vm.destination.value)
+        val error = vm.routeError.value
+        assertNotNull(error)
+        assertTrue("unexpected message: $error", error!!.contains("supported area"))
+    }
+
+    @Test
+    fun `reroute failure surfaces a visible error while keeping the last valid route`() = runTest {
+        var now = 0L
+        val routing = FlakyRoutingProvider(
+            first = AppResult.Success(listOf(route(distanceMeters = 445.0))),
+            afterwards = AppResult.Failure(AppErrorKind.NETWORK, "network down"),
+        )
+        val vm = AppViewModel(
+            container(
+                routing = routing,
+                engineScope = CoroutineScope(UnconfinedTestDispatcher(testScheduler)),
+                engineClock = { now },
+            ),
+        )
+        vm.setDemoMode(true)
+        vm.onDestinationSelected(charminar)
+        vm.engine.onLocationUpdate(location())
+        vm.prepareRoute()
+        advanceUntilIdle()
+        vm.startNavigation()
+        val routeBeforeReroute = vm.engine.state.value.activeRoute
+        assertNotNull(routeBeforeReroute)
+
+        // Sustained deviation (~110 m east of the route, past the sustain window).
+        now = 1_000
+        vm.engine.onLocationUpdate(location(lat = 17.3855, lon = 78.4877).copy(timestamp = now))
+        now = 6_000
+        vm.engine.onLocationUpdate(location(lat = 17.3855, lon = 78.4877).copy(timestamp = now))
+
+        // The failure is surfaced (not frozen), the reroute flag cleared, and the previous
+        // route kept — asserted BEFORE advancing time so the auto-clear delay cannot hide it.
+        assertNotNull("reroute failures must be visible", vm.rerouteError.value)
+        assertFalse(vm.engine.state.value.rerouting)
+        assertEquals(routeBeforeReroute, vm.engine.state.value.activeRoute)
+        assertEquals(2, routing.calls) // 1 preview fetch + 1 reroute attempt
     }
 }
