@@ -83,6 +83,29 @@ class NominatimParsingTest {
     }
 
     @Test
+    fun `reverse response coordinates never displace the pressed pin`() {
+        val pressed = Coordinate(17.4000, 78.5000)
+        // Real Nominatim reverse bodies always carry lat/lon of the NEAREST MAPPED ENTITY,
+        // which can sit tens of metres from the pin. Those must never replace the pressed
+        // coordinate — the marker and the route target exactly what the user pressed.
+        val body = """
+            {
+              "lat": "17.4100",
+              "lon": "78.5200",
+              "display_name": "Nearest Building, Hyderabad",
+              "name": "Nearest Building"
+            }
+        """.trimIndent()
+
+        val result = provider.parseReverse(body, pressed)
+        assertTrue("expected success, got $result", result is AppResult.Success)
+        val d = (result as AppResult.Success).value
+        assertEquals("Nearest Building", d.title)
+        assertEquals(17.4000, d.coordinate.latitude, 1e-9)
+        assertEquals(78.5000, d.coordinate.longitude, 1e-9)
+    }
+
+    @Test
     fun `reverse error payload becomes dropped pin at the pressed coordinate`() {
         val pressed = Coordinate(17.41, 78.48)
         val result = provider.parseReverse(

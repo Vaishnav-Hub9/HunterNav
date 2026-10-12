@@ -28,6 +28,10 @@ state is kept independent from the UI so a future ESP32 display can consume it o
 - Navigation camera: FOLLOW / OVERVIEW / FREE modes with dynamic maneuver-based zoom
 - Distance units (metric/imperial), camera preference, attribution screen
 - **Hidden demo mode**: simulated GPS, wrong turns and rerouting without riding
+- **Handlebar display pipeline**: rendered navigation frames + guidance streamed to an ESP32
+  over Wi-Fi (WebSocket), behind the stable `DisplayNavigationState` contract — works with the
+  Google Navigation SDK *or* the built-in OSRM engine, no paid API key required
+  ([docs/display-pipeline.md](docs/display-pipeline.md))
 - Unit tests for parsing, normalization, formatting, off-route, cooldown, arrival and engine
   state transitions
 
@@ -205,17 +209,28 @@ behavior under flaky cellular networks, and background/foreground transitions du
 active ride. The current-location pointer is **not** proof that turn navigation or
 rerouting is correct.
 
-## Future ESP32 integration
+## ESP32 handlebar display pipeline
 
-The engine publishes every update through the `NavigationOutput` interface as a plain
-`DisplayNavigationState` (latitude, longitude, bearing, maneuver, distances, route geometry,
-viewport). Nothing Android-specific crosses that boundary. The future path is:
+The navigation state is published as a plain, Android-free `DisplayNavigationState` and can be
+streamed to an external display. `display/` implements the full phone-side pipeline: a pluggable
+`NavigationDataProvider` (Google Navigation SDK adapter with turn-by-turn feed service, the
+legacy OSRM engine, or an offline simulator), a software renderer that draws heading-up route
+frames, a bounded JPEG encoder, a versioned binary wire protocol (`HNV1`) and a WebSocket
+transport to the ESP32 — with ~10 Hz guidance metadata and ~4 Hz image frames. The Google
+Navigation SDK is used only when `google.maps.apiKey` is configured; otherwise the pipeline
+falls back to the same open-source OSRM stack as the phone UI. See
+[docs/display-pipeline.md](docs/display-pipeline.md) for the architecture, wire format and
+configuration. The BLE path in [docs/future-hardware.md](docs/future-hardware.md) remains a
+future alternative transport — the state contract is shared.
 
 ```
-NavigationOutput → BluetoothNavigationOutput → ESP32 → small TFT/LCD handlebar display
+NavigationDataProvider → DisplayNavigationState → FrameRenderer → JpegEncoder
+                                                        │
+                          FrameProtocol ("HNV1") ◀──────┘
+                                   │ WebSocket (binary)
+                                   ▼
+                              ESP32 display
 ```
-
-No Bluetooth code exists today — preparation only. See [docs/future-hardware.md](docs/future-hardware.md).
 
 ## Repository structure
 

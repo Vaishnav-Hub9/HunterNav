@@ -35,8 +35,9 @@ import org.maplibre.geojson.Point
 /**
  * Owns all MapLibre interaction: style loading (OpenFreeMap Liberty), route line rendering,
  * destination marker, camera modes and dynamic zoom. UI components never touch MapLibre APIs.
+ * Implements [MapSurface] so screens can use it interchangeably with the Mappls controller.
  */
-class MapController(private val context: Context, private val mapView: MapView) {
+class MapController(private val context: Context, private val mapView: MapView) : MapSurface {
 
     private var style: Style? = null
     private var routeSource: GeoJsonSource? = null
@@ -68,7 +69,7 @@ class MapController(private val context: Context, private val mapView: MapView) 
     private var styleWatchdog: Runnable = Runnable {}
 
     /** Invoked when the user pans/zooms by gesture — screens switch to FREE mode (spec §14). */
-    var onUserGesture: (() -> Unit)? = null
+    override var onUserGesture: (() -> Unit)? = null
 
     /**
      * Camera padding for active navigation: reserving the top band (maneuver banner + route
@@ -77,7 +78,7 @@ class MapController(private val context: Context, private val mapView: MapView) 
     // setPadding(int,int,int,int) is soft-deprecated in MapLibre 13 but is still the only
     // padding API on MapLibreMap; kept deliberately for lower-middle puck placement.
     @Suppress("DEPRECATION")
-    fun setNavPadding(left: Int, top: Int, right: Int, bottom: Int) {
+    override fun setNavPadding(left: Int, top: Int, right: Int, bottom: Int) {
         navPadding = intArrayOf(left, top, right, bottom)
         if (cameraMode == CameraMode.FOLLOW) {
             mapView.getMapAsync { it.setPadding(left, top, right, bottom) }
@@ -92,14 +93,14 @@ class MapController(private val context: Context, private val mapView: MapView) 
      * MapLibre's map-load failure listener, and a watchdog for the case where the style
      * callback never fires at all. A late successful load clears the screen error via [onReady].
      */
-    fun loadStyle(onReady: () -> Unit, onError: (String) -> Unit = {}) {
+    override fun loadStyle(onReady: () -> Unit, onError: (String) -> Unit) {
         onStyleReady = onReady
         onStyleError = onError
         startStyleLoad()
     }
 
     /** Re-attempts the style load after a failure (Retry button in the error overlay). */
-    fun retryStyle() {
+    override fun retryStyle() {
         if (onStyleReady == null) return
         styleReady = false
         startStyleLoad()
@@ -231,7 +232,7 @@ class MapController(private val context: Context, private val mapView: MapView) 
      * Renders the current-location pointer. No-op until the style has loaded, and skipped
      * when the position has not meaningfully changed (stationary rider / duplicate fixes).
      */
-    fun showUserLocation(location: LocationData) {
+    override fun showUserLocation(location: LocationData) {
         if (!throttle.shouldPublishUserLocation(location.latitude, location.longitude)) return
         userSource?.setGeoJson(
             Feature.fromGeometry(Point.fromLngLat(location.longitude, location.latitude)),
@@ -239,7 +240,7 @@ class MapController(private val context: Context, private val mapView: MapView) 
     }
 
     /** Renders the full route (preview mode). Safe to call before the style has loaded. */
-    fun showRoute(route: Route?) {
+    override fun showRoute(route: Route?) {
         lastRoute = route
         lastRouteProgress = null
         applyRoute()
@@ -262,7 +263,7 @@ class MapController(private val context: Context, private val mapView: MapView) 
      * Active-navigation rendering: the remaining route stays bright cobalt, the traveled part
      * dims. [snappedIndex] is the user's vertex index in the route geometry.
      */
-    fun showRouteProgress(route: Route, snappedIndex: Int) {
+    override fun showRouteProgress(route: Route, snappedIndex: Int) {
         lastRoute = route
         lastRouteProgress = route to snappedIndex
         applyRouteProgress()
@@ -293,7 +294,7 @@ class MapController(private val context: Context, private val mapView: MapView) 
         }
     }
 
-    fun showDestination(coordinate: Coordinate?) {
+    override fun showDestination(coordinate: Coordinate?) {
         lastDestination = coordinate
         applyDestination()
     }
@@ -309,7 +310,7 @@ class MapController(private val context: Context, private val mapView: MapView) 
     }
 
     /** Fits the camera to the route bounds (OVERVIEW mode + route preview). */
-    fun fitRoute(route: Route?) {
+    override fun fitRoute(route: Route?) {
         val geometry = route?.geometry ?: return
         if (geometry.size < 2) return
         mapView.getMapAsync { map ->
@@ -321,7 +322,7 @@ class MapController(private val context: Context, private val mapView: MapView) 
     }
 
     @Suppress("DEPRECATION")
-    fun setCameraMode(mode: CameraMode) {
+    override fun setCameraMode(mode: CameraMode) {
         cameraMode = mode
         val padding = navPadding
         if (mode == CameraMode.FOLLOW && padding != null) {
@@ -331,14 +332,14 @@ class MapController(private val context: Context, private val mapView: MapView) 
         }
     }
 
-    fun cameraMode(): CameraMode = cameraMode
+    override fun cameraMode(): CameraMode = cameraMode
 
     /**
      * Follows the user with bearing rotation (FOLLOW mode). Uses a short ease instead of an
      * instant move: the tick loop already throttles on movement/heading change, and the small
      * animation is what makes mid-range-device motion read smoothly instead of stuttering.
      */
-    fun follow(location: LocationData, bearing: Double, zoom: Double) {
+    override fun follow(location: LocationData, bearing: Double, zoom: Double) {
         if (cameraMode != CameraMode.FOLLOW) return
         mapView.getMapAsync { map ->
             val builder = CameraPosition.Builder()
@@ -350,12 +351,20 @@ class MapController(private val context: Context, private val mapView: MapView) 
         }
     }
 
-    fun centerOn(coordinate: Coordinate, zoom: Double = BuildConfig.DEFAULT_ZOOM) {
+    override fun centerOn(coordinate: Coordinate, zoom: Double) {
         mapView.getMapAsync { map ->
             map.easeCamera(
                 CameraUpdateFactory.newLatLngZoom(LatLng(coordinate.latitude, coordinate.longitude), zoom),
                 500,
             )
+        }
+    }
+
+    override fun addOnMapLongClickListener(listener: (Coordinate) -> Boolean) {
+        mapView.getMapAsync { map ->
+            map.addOnMapLongClickListener { point ->
+                listener(Coordinate(point.latitude, point.longitude))
+            }
         }
     }
 

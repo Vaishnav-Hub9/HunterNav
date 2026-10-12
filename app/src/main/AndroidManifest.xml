@@ -3,9 +3,17 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <!-- Navigation stays foreground-only in V1: no background location is requested. -->
+    <!-- The display-pipeline service keeps frame streaming alive with the screen off (phone
+         in the pocket). It runs as a LOCATION-type foreground service — the documented way to
+         keep Fused Location delivering while backgrounded. No background-location *requests*
+         are made; the service only extends the already-granted foreground location session. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <uses-feature android:name="android.hardware.location.gps" android:required="false" />
 
@@ -18,6 +26,12 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.HunterNav">
 
+        <!-- Google Navigation SDK / Maps key. Value comes from local.properties
+             (google.maps.apiKey) via manifestPlaceholders — never committed to git. -->
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="${MAPS_API_KEY}" />
+
         <activity
             android:name=".ui.MainActivity"
             android:exported="true"
@@ -29,6 +43,20 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Turn-by-turn feed receiver for the display pipeline: the Navigation SDK binds to
+             this service after Navigator.registerServiceForNavUpdates() and delivers NavInfo
+             messages (~1 Hz) that are decoded into SDK-free snapshots. -->
+        <service
+            android:name=".display.nav.NavFeedService"
+            android:exported="true" />
+
+        <!-- Display pipeline owner: streams rendered navigation frames to the ESP32 while a
+             ride is in progress, including with the screen off (phone in pocket). -->
+        <service
+            android:name=".display.DisplayForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
     </application>
 
 </manifest>

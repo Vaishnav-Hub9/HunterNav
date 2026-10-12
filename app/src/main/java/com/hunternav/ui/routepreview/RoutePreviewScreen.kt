@@ -34,7 +34,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.hunternav.core.util.DebugLog
@@ -43,8 +42,8 @@ import com.hunternav.di.AppContainer
 import com.hunternav.ui.AppViewModel
 import com.hunternav.ui.components.MapLoadErrorOverlay
 import com.hunternav.ui.components.PrimaryActionButton
-import com.hunternav.ui.map.HunterNavMapView
-import com.hunternav.ui.map.MapController
+import com.hunternav.ui.map.HunterNavMapSurface
+import com.hunternav.ui.map.MapSurface
 import com.hunternav.ui.rememberAppViewModel
 import com.hunternav.ui.theme.Cobalt
 import com.hunternav.ui.theme.InkSecondary
@@ -58,7 +57,6 @@ fun RoutePreviewScreen(
     onChangeDestination: () -> Unit,
     onStartNavigation: () -> Unit,
 ) {
-    val context = LocalContext.current
     val viewModel: AppViewModel = rememberAppViewModel(container)
 
     val destination by viewModel.destination.collectAsState()
@@ -67,7 +65,7 @@ fun RoutePreviewScreen(
     val loading by viewModel.isLoadingRoutes.collectAsState()
     val error by viewModel.routeError.collectAsState()
 
-    var mapController by remember { mutableStateOf<MapController?>(null) }
+    var mapSurface by remember { mutableStateOf<MapSurface?>(null) }
     var routeAttempted by remember { mutableStateOf(false) }
     var mapError by remember { mutableStateOf<String?>(null) }
 
@@ -100,24 +98,23 @@ fun RoutePreviewScreen(
     }
 
     // Draw route + destination when data arrives.
-    LaunchedEffect(selectedRoute, mapController) {
-        mapController?.let { controller ->
-            controller.showRoute(selectedRoute)
-            controller.fitRoute(selectedRoute)
-            destination?.let { controller.showDestination(it.coordinate) }
+    LaunchedEffect(selectedRoute, mapSurface) {
+        mapSurface?.let { surface ->
+            surface.showRoute(selectedRoute)
+            surface.fitRoute(selectedRoute)
+            destination?.let { surface.showDestination(it.coordinate) }
         }
     }
 
     Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        HunterNavMapView(
+        HunterNavMapSurface(
             modifier = Modifier.fillMaxSize(),
-            onMapViewReady = { mv ->
-                val controller = MapController(context, mv)
-                mapController = controller
-                controller.loadStyle(
+            onSurfaceReady = { surface ->
+                mapSurface = surface
+                surface.loadStyle(
                     onReady = {
                         mapError = null
-                        viewModel.engine.state.value.currentLocation?.let { controller.showUserLocation(it) }
+                        viewModel.engine.state.value.currentLocation?.let { surface.showUserLocation(it) }
                         viewModel.onMapReady()
                     },
                     onError = { mapError = it },
@@ -127,13 +124,13 @@ fun RoutePreviewScreen(
 
         // Map/style load failure: visible error + retry instead of a blank screen (spec §1).
         mapError?.let { message ->
-            MapLoadErrorOverlay(message = message, onRetry = { mapController?.retryStyle() })
+            MapLoadErrorOverlay(message = message, onRetry = { mapSurface?.retryStyle() })
         }
 
         // Current-location pointer stays live on the preview map as well.
-        LaunchedEffect(mapController) {
+        LaunchedEffect(mapSurface) {
             viewModel.engine.state.collect { state ->
-                state.currentLocation?.let { mapController?.showUserLocation(it) }
+                state.currentLocation?.let { mapSurface?.showUserLocation(it) }
             }
         }
 

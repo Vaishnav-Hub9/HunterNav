@@ -67,6 +67,14 @@ class AppViewModel(
     private val _demoMode = MutableStateFlow(false)
     val demoMode: StateFlow<Boolean> = _demoMode.asStateFlow()
 
+    /**
+     * Recently selected destinations (most-recent-first), sourced from the real selection
+     * history — every entry is a place the user actually picked, with its exact coordinate.
+     * The home screen renders these instead of any built-in placeholder list.
+     */
+    private val _recents = MutableStateFlow(container.destinationHistory.recent())
+    val recents: StateFlow<List<Destination>> = _recents.asStateFlow()
+
     private val _demoRunning = MutableStateFlow(false)
     val demoRunning: StateFlow<Boolean> = _demoRunning.asStateFlow()
 
@@ -193,7 +201,7 @@ class AppViewModel(
     // Destination selection
     // ---------------------------------------------------------------------
 
-    fun onDestinationSelected(destination: Destination) {
+    fun onDestinationSelected(destination: Destination, source: String = "search") {
         // Spec P3: the supported area is Telangana — reject anything else with a clear message
         // BEFORE any route request can be created.
         if (!SupportedRegion.isSupported(destination.coordinate)) {
@@ -206,7 +214,7 @@ class AppViewModel(
         }
         DebugLog.d(
             "DESTINATION_SELECTED",
-            "vm=$vmTag title=${destination.title} subtitle=${destination.subtitle}",
+            "vm=$vmTag source=$source provider=nominatim title=${destination.title} subtitle=${destination.subtitle}",
         )
         DebugLog.d(
             "DESTINATION_COORDINATES",
@@ -222,6 +230,12 @@ class AppViewModel(
      * destination must discard the previous active route and navigation steps).
      */
     private fun setDestination(destination: Destination) {
+        // Real selection history: recorded for every confirmed selection (search tap, map
+        // pin, recent) BEFORE the same-coordinate early return, so re-picking a place moves
+        // it back to the front of the home screen's recents.
+        container.destinationHistory.record(destination)
+        _recents.value = container.destinationHistory.recent()
+
         val previous = _destination.value
         _destination.value = destination
         if (previous != null && previous.coordinate == destination.coordinate) return
@@ -255,7 +269,7 @@ class AppViewModel(
         )
         DebugLog.d(
             "DESTINATION_SELECTED",
-            "vm=$vmTag source=map_long_press title=${fallback.title}",
+            "vm=$vmTag source=map_long_press provider=nominatim title=${fallback.title}",
         )
         DebugLog.d(
             "DESTINATION_COORDINATES",
@@ -269,7 +283,12 @@ class AppViewModel(
             // while the reverse lookup was in flight, its label must not overwrite the new one.
             if (generationAtPress != tripGeneration) return@launch
             if (result is com.hunternav.core.result.AppResult.Success) {
+                // Label-only upgrade: the PRESSED coordinate stays authoritative. Reverse
+                // geocoding answers with the nearest mapped entity's own coordinates, which
+                // can sit tens of metres from the pin — those must never move the destination
+                // (the marker and the route would silently target a different point).
                 _destination.value = result.value.copy(
+                    coordinate = coordinate,
                     subtitle = result.value.subtitle ?: fallback.subtitle,
                 )
             }
@@ -370,6 +389,9 @@ class AppViewModel(
         // Arrival is evaluated against the selected destination, not merely the geometry end.
         engine.startNavigation(route, initial, arrivalDestination = _destination.value?.coordinate)
         _phase.value = AppPhase.NAVIGATING
+        // Hand frame streaming to the display foreground service so the handlebar display
+        // keeps receiving frames with the phone in a pocket (screen off, app backgrounded).
+        container.startDisplayStreaming()
     }
 
     /**
@@ -392,6 +414,7 @@ class AppViewModel(
         locationUpdatesJob?.cancel()
         locationUpdatesJob = null
         locationProvider.stop()
+        container.stopDisplayStreaming()
         _routes.value = emptyList()
         _selectedRoute.value = null
         _routesForDestination.value = null
@@ -414,6 +437,11 @@ class AppViewModel(
         if (locationUpdatesJob?.isActive == true) locationProvider.stop()
         if (!enabled) stopDemoSimulation()
         _demoMode.value = enabled
+        // Diagnostics: which location source feeds navigation (spec: never silently simulated).
+        DebugLog.d(
+            "DEMO_MODE_CHANGED",
+            "vm=$vmTag enabled=$enabled location_provider=${if (enabled) "fake" else "real_gps"}",
+        )
     }
 
     /** Arms the demo simulator along the selected/active route. */

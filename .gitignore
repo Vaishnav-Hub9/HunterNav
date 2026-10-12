@@ -17,6 +17,16 @@ captures/
 # Local configuration (contains machine-specific paths; never commit secrets)
 local.properties
 
+# Firmware (PlatformIO)
+firmware/.pio/
+# Local Wi-Fi credentials for the ESP32 display — build-time only, never commit
+firmware/include/wifi_config.h
+
+# Mappls authentication files (issued per package + signing certificate; local-only, NEVER
+# commit — see docs/mappls.md)
+*.a.olf
+*.a.conf
+
 # Signing
 *.jks
 *.keystore

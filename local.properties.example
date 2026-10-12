@@ -15,5 +15,16 @@ default.latitude=17.3850
 default.longitude=78.4867
 default.zoom=12.5
 
-# Developer demo switch compiled into the app
-demo.enabled=true
+# Developer demo switch compiled into the app (default false — flip to true while developing
+# the simulator; leave unset/false for normal builds)
+demo.enabled=false
+
+# Google Maps key for the Navigation SDK + Map Tiles API (display pipeline). Empty = the
+# display falls back to HunterNav's own OSRM engine (no paid API required).
+google.maps.apiKey=
+
+# Handlebar display pipeline: WebSocket endpoint of the ESP32 display
+# (192.168.4.1 is the ESP32 soft-AP default) and a dev switch that forces the offline
+# simulator as the display navigation source regardless of API key.
+display.wsUrl=ws://192.168.4.1:81/display
+display.simulator=false

@@ -38,34 +38,21 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.hunternav.ui.rememberAppViewModel
 import com.hunternav.BuildConfig
 import com.hunternav.di.AppContainer
-import com.hunternav.domain.model.Coordinate
-import com.hunternav.domain.model.Destination
 import com.hunternav.ui.AppViewModel
 import com.hunternav.ui.components.HunterLogo
 import com.hunternav.ui.components.MapLoadErrorOverlay
 import com.hunternav.ui.components.PrimaryActionButton
-import com.hunternav.ui.map.HunterNavMapView
-import com.hunternav.ui.map.MapController
+import com.hunternav.ui.map.HunterNavMapSurface
+import com.hunternav.ui.map.MapSurface
 import com.hunternav.ui.theme.Cobalt
 import com.hunternav.ui.theme.CobaltTint
 import com.hunternav.ui.theme.InkSecondary
 import com.hunternav.ui.theme.IvoryElevated
-import org.maplibre.android.maps.MapView
-
-/** Recents are placeholders in V1 (spec: recent destination placeholders). */
-private data class Recent(val title: String, val subtitle: String, val lat: Double, val lon: Double)
-
-private val RECENTS = listOf(
-    Recent("Vasavi College of Engineering", "Ibrahimbagh, Hyderabad", 17.3969, 78.3208),
-    Recent("Charminar", "Char Kaman, Ghansi Bazaar", 17.3616, 78.4747),
-    Recent("Gachibowli", "Financial District, Hyderabad", 17.4401, 78.3489),
-)
 
 /** Home: map preview + destination search + recents + start action. */
 @Composable
@@ -76,15 +63,16 @@ fun HomeScreen(
     onDestinationPicked: () -> Unit,
     onStartNavigation: () -> Unit,
 ) {
-    val context = LocalContext.current
     val viewModel: AppViewModel = rememberAppViewModel(container)
 
     val destination by viewModel.destination.collectAsState()
     val locationStatus by viewModel.locationStatus.collectAsState()
     val demoMode by viewModel.demoMode.collectAsState()
+    // Real selection history (never a built-in placeholder list): every entry is a place the
+    // user actually picked, with the exact coordinate that was selected.
+    val recents by viewModel.recents.collectAsState()
 
-    var mapController by remember { mutableStateOf<MapController?>(null) }
-    var mapView by remember { mutableStateOf<MapView?>(null) }
+    var mapSurface by remember { mutableStateOf<MapSurface?>(null) }
     var mapError by remember { mutableStateOf<String?>(null) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -110,16 +98,14 @@ fun HomeScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        HunterNavMapView(
+        HunterNavMapSurface(
             modifier = Modifier.fillMaxSize(),
-            onMapViewReady = { mv ->
-                mapView = mv
-                val controller = MapController(context, mv)
-                mapController = controller
-                controller.loadStyle(
+            onSurfaceReady = { surface ->
+                mapSurface = surface
+                surface.loadStyle(
                     onReady = {
                         mapError = null
-                        viewModel.engine.state.value.currentLocation?.let { controller.showUserLocation(it) }
+                        viewModel.engine.state.value.currentLocation?.let { surface.showUserLocation(it) }
                         viewModel.onMapReady()
                     },
                     onError = { mapError = it },
@@ -129,27 +115,22 @@ fun HomeScreen(
 
         // Map/style load failure: visible error + retry instead of a blank screen (spec §1).
         mapError?.let { message ->
-            MapLoadErrorOverlay(message = message, onRetry = { mapController?.retryStyle() })
+            MapLoadErrorOverlay(message = message, onRetry = { mapSurface?.retryStyle() })
         }
 
         // Keep the current-location pointer in sync with the engine (acceptance 5–6).
-        LaunchedEffect(mapController) {
+        LaunchedEffect(mapSurface) {
             viewModel.engine.state.collect { state ->
-                state.currentLocation?.let { mapController?.showUserLocation(it) }
+                state.currentLocation?.let { mapSurface?.showUserLocation(it) }
             }
         }
 
         // Map long-press = destination selection (spec: map selection).
-        LaunchedEffect(mapController) {
-            mapController?.let { controller ->
-                mapView?.getMapAsync { map ->
-                    map.addOnMapLongClickListener { point ->
-                        val coord = Coordinate(point.latitude, point.longitude)
-                        viewModel.onMapLongPress(coord)
-                        controller.showDestination(coord)
-                        true
-                    }
-                }
+        LaunchedEffect(mapSurface) {
+            mapSurface?.addOnMapLongClickListener { coord ->
+                viewModel.onMapLongPress(coord)
+                mapSurface?.showDestination(coord)
+                true
             }
         }
 
@@ -176,7 +157,7 @@ fun HomeScreen(
         // Locate-me
         IconButton(
             onClick = {
-                viewModel.currentLocationOrNull()?.let { mapController?.centerOn(it.coordinate) }
+                viewModel.currentLocationOrNull()?.let { mapSurface?.centerOn(it.coordinate) }
             },
             modifier = Modifier
                 .align(Alignment.TopEnd)
@@ -249,39 +230,42 @@ fun HomeScreen(
                 }
 
                 Spacer(Modifier.height(14.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Recent destinations", style = MaterialTheme.typography.titleMedium)
-                    Spacer(Modifier.weight(1f))
-                    Text("View all", style = MaterialTheme.typography.labelLarge, color = Cobalt)
-                }
-                Spacer(Modifier.height(4.dp))
+                if (recents.isNotEmpty()) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Recent destinations", style = MaterialTheme.typography.titleMedium)
+                    }
+                    Spacer(Modifier.height(4.dp))
 
-                RECENTS.forEach { recent ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                viewModel.onDestinationSelected(
-                                    Destination(
-                                        Coordinate(recent.lat, recent.lon),
-                                        recent.title,
-                                        recent.subtitle,
-                                    ),
-                                )
-                                onDestinationPicked()
+                    recents.forEach { recent ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    viewModel.onDestinationSelected(recent, source = "recent")
+                                    onDestinationPicked()
+                                }
+                                .padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Surface(shape = CircleShape, color = CobaltTint) {
+                                Icon(Icons.Default.Place, contentDescription = null, tint = Cobalt, modifier = Modifier.padding(8.dp).size(20.dp))
                             }
-                            .padding(vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Surface(shape = CircleShape, color = CobaltTint) {
-                            Icon(Icons.Default.Place, contentDescription = null, tint = Cobalt, modifier = Modifier.padding(8.dp).size(20.dp))
-                        }
-                        Spacer(Modifier.size(10.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(recent.title, style = MaterialTheme.typography.titleMedium)
-                            Text(recent.subtitle, style = MaterialTheme.typography.bodyMedium, color = InkSecondary)
+                            Spacer(Modifier.size(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(recent.title, style = MaterialTheme.typography.titleMedium)
+                                recent.subtitle?.let {
+                                    Text(it, style = MaterialTheme.typography.bodyMedium, color = InkSecondary)
+                                }
+                            }
                         }
                     }
+                } else {
+                    Text(
+                        "Your picked destinations will appear here — search for a place or " +
+                            "long-press the map to drop a pin.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = InkSecondary,
+                    )
                 }
 
                 Spacer(Modifier.height(10.dp))

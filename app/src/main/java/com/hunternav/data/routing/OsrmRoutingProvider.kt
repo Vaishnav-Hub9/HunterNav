@@ -85,7 +85,7 @@ class OsrmRoutingProvider(
 
         DebugLog.d(
             "ROUTE_REQUEST",
-            "req=$requestId origin=${origin.latitude},${origin.longitude} " +
+            "req=$requestId provider=osrm origin=${origin.latitude},${origin.longitude} " +
                 "destination=${destination.latitude},${destination.longitude} " +
                 "alternatives=$alternatives url=$url",
         )

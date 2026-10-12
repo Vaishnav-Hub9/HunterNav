@@ -35,7 +35,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.hunternav.ui.rememberAppViewModel
@@ -51,8 +50,8 @@ import com.hunternav.ui.components.StatusRibbon
 import com.hunternav.core.util.DebugLog
 import com.hunternav.core.util.angleDelta
 import com.hunternav.domain.model.Coordinate
-import com.hunternav.ui.map.HunterNavMapView
-import com.hunternav.ui.map.MapController
+import com.hunternav.ui.map.HunterNavMapSurface
+import com.hunternav.ui.map.MapSurface
 import com.hunternav.ui.map.NavigationCameraController
 import com.hunternav.ui.map.NavigationZoomPolicy
 import com.hunternav.ui.map.RenderThrottle
@@ -70,7 +69,6 @@ fun NavigationScreen(
     container: AppContainer,
     onExit: () -> Unit,
 ) {
-    val context = LocalContext.current
     val viewModel: AppViewModel = rememberAppViewModel(container)
 
     val navState by viewModel.engine.state.collectAsState()
@@ -78,7 +76,7 @@ fun NavigationScreen(
     val demoMode by viewModel.demoMode.collectAsState()
     val demoRunning by viewModel.demoRunning.collectAsState()
 
-    var mapController by remember { mutableStateOf<MapController?>(null) }
+    var mapSurface by remember { mutableStateOf<MapSurface?>(null) }
     var cameraController by remember { mutableStateOf<NavigationCameraController?>(null) }
     var cameraMode by remember { mutableStateOf(CameraMode.FOLLOW) }
     var mapHeightPx by remember { mutableIntStateOf(0) }
@@ -93,22 +91,22 @@ fun NavigationScreen(
     }
 
     // Reserve the top band so the camera keeps the puck in the lower-middle of the screen.
-    LaunchedEffect(mapHeightPx, mapController) {
-        if (mapHeightPx > 0 && mapController != null) {
-            mapController?.setNavPadding(0, (mapHeightPx * 0.34f).toInt(), 0, 0)
+    LaunchedEffect(mapHeightPx, mapSurface) {
+        if (mapHeightPx > 0 && mapSurface != null) {
+            mapSurface?.setNavPadding(0, (mapHeightPx * 0.34f).toInt(), 0, 0)
         }
     }
 
     val route = navState.activeRoute
 
     // Camera/marker follow loop (spec P1: severe map lag on mid-range devices).
-    // NavigationCameraController decides zoom via NavigationZoomPolicy; MapController no-ops
+    // NavigationCameraController decides zoom via NavigationZoomPolicy; the map surface no-ops
     // outside FOLLOW so user gestures stay in FREE mode. Each 500 ms tick now does real work
     // only when the rider actually moved/turned, and the route line is re-published only when
     // the snapped vertex (or route) changed — identical setGeoJson calls were the dominant
     // main-thread cost during rides.
-    LaunchedEffect(mapController, route) {
-        if (mapController == null || route == null) return@LaunchedEffect
+    LaunchedEffect(mapSurface, route) {
+        if (mapSurface == null || route == null) return@LaunchedEffect
         var lastCameraCoordinate: Coordinate? = null
         var lastCameraBearing = Double.NaN
         var lastPublishedVersion = -1L
@@ -119,7 +117,7 @@ fun NavigationScreen(
                 val bearingChanged = lastCameraBearing.isNaN() ||
                     kotlin.math.abs(angleDelta(lastCameraBearing, state.currentBearing)) >= RenderThrottle.CAMERA_MIN_BEARING_DELTA_DEGREES
                 if (RenderThrottle.movedEnough(lastCameraCoordinate, location.coordinate) || bearingChanged) {
-                    mapController?.showUserLocation(location)
+                    mapSurface?.showUserLocation(location)
                     cameraController?.onNavigationTick(
                         location = location,
                         bearing = state.currentBearing,
@@ -130,7 +128,7 @@ fun NavigationScreen(
                 }
             }
             if (state.routeVersion != lastPublishedVersion || state.snappedGeometryIndex != lastPublishedVertex) {
-                mapController?.showRouteProgress(route, state.snappedGeometryIndex)
+                mapSurface?.showRouteProgress(route, state.snappedGeometryIndex)
                 if (state.routeVersion != lastPublishedVersion) {
                     // Stage 7 of the reroute pipeline (spec P2): the new route is on screen.
                     DebugLog.d(
@@ -151,22 +149,21 @@ fun NavigationScreen(
             .background(MaterialTheme.colorScheme.background)
             .onSizeChanged { mapHeightPx = it.height },
     ) {
-        HunterNavMapView(
+        HunterNavMapSurface(
             modifier = Modifier.fillMaxSize(),
-            onMapViewReady = { mv ->
-                val controller = MapController(context, mv)
-                mapController = controller
-                cameraController = NavigationCameraController(controller)
-                controller.onUserGesture = {
+            onSurfaceReady = { surface ->
+                mapSurface = surface
+                cameraController = NavigationCameraController(surface)
+                surface.onUserGesture = {
                     cameraMode = CameraMode.FREE
-                    controller.setCameraMode(CameraMode.FREE)
+                    surface.setCameraMode(CameraMode.FREE)
                 }
-                controller.loadStyle(
+                surface.loadStyle(
                     onReady = {
                         mapError = null
-                        controller.showRoute(route)
-                        route?.let { controller.fitRoute(it) }
-                        viewModel.engine.state.value.currentLocation?.let { controller.showUserLocation(it) }
+                        surface.showRoute(route)
+                        route?.let { surface.fitRoute(it) }
+                        viewModel.engine.state.value.currentLocation?.let { surface.showUserLocation(it) }
                         viewModel.onMapReady()
                     },
                     onError = { mapError = it },
@@ -176,7 +173,7 @@ fun NavigationScreen(
 
         // Map/style load failure: visible error + retry instead of a blank screen (spec §1).
         mapError?.let { message ->
-            MapLoadErrorOverlay(message = message, onRetry = { mapController?.retryStyle() })
+            MapLoadErrorOverlay(message = message, onRetry = { mapSurface?.retryStyle() })
         }
 
         // Maneuver banner (top)
@@ -279,7 +276,7 @@ fun NavigationScreen(
                     cameraMode = CameraMode.FOLLOW
                     cameraController?.followMode()
                     navState.currentLocation?.let {
-                        mapController?.follow(it, navState.currentBearing, NavigationZoomPolicy().cruiseZoom)
+                        mapSurface?.follow(it, navState.currentBearing, NavigationZoomPolicy().cruiseZoom)
                     }
                 },
             )

@@ -83,7 +83,7 @@ class NominatimGeocodingProvider(
 
         DebugLog.d(
             "GEOCODING_REQUEST",
-            "req=$requestId source=search query=\"$query\" near=${if (near != null) "supplied" else "none"} limit=$limit",
+            "req=$requestId provider=nominatim source=search query=\"$query\" near=${if (near != null) "supplied" else "none"} limit=$limit",
         )
 
         return try {
@@ -153,7 +153,7 @@ class NominatimGeocodingProvider(
 
         DebugLog.d(
             "GEOCODING_REQUEST",
-            "req=$requestId source=reverse lat=${coordinate.latitude} lon=${coordinate.longitude}",
+            "req=$requestId provider=nominatim source=reverse lat=${coordinate.latitude} lon=${coordinate.longitude}",
         )
 
         return try {
@@ -210,17 +210,21 @@ class NominatimGeocodingProvider(
         }
     }
 
-    /** Parses a Nominatim reverse response; falls back to the pressed coordinate (spec §4). */
+    /**
+     * Parses a Nominatim reverse response for [coordinate]. The pressed coordinate is
+     * AUTHORITATIVE: the response supplies the label (name, address), but its own lat/lon
+     * describe the nearest mapped entity, which can sit tens of metres away from the pin —
+     * returning those would silently move the user's destination (marker + route endpoint).
+     */
     internal fun parseReverse(body: String, coordinate: Coordinate): AppResult<Destination> {
         return try {
             val obj = json.parseToJsonElement(body).jsonObject
             if (obj.containsKey("error")) {
                 AppResult.Success(Destination(coordinate, title = "Dropped pin"))
             } else {
-                AppResult.Success(
-                    destinationFrom(obj, fallbackCoordinate = coordinate)
-                        ?: Destination(coordinate, title = "Dropped pin"),
-                )
+                val resolved = destinationFrom(obj, fallbackCoordinate = coordinate)
+                    ?: Destination(coordinate, title = "Dropped pin")
+                AppResult.Success(resolved.copy(coordinate = coordinate))
             }
         } catch (e: Exception) {
             AppResult.Failure(AppErrorKind.PARSE, "Malformed geocoder response", e)

@@ -26,10 +26,11 @@ data class NavigationZoomPolicy(
 
 /**
  * Bridges the navigation engine state to map camera updates: decides zoom via
- * [NavigationZoomPolicy] and delegates mode-aware camera movement to [MapController].
+ * [NavigationZoomPolicy] and delegates mode-aware camera movement to [MapSurface]
+ * (works with both the Mappls and the MapLibre map engine).
  */
 class NavigationCameraController(
-    private val mapController: MapController,
+    private val mapController: MapSurface,
     var zoomPolicy: NavigationZoomPolicy = NavigationZoomPolicy(),
 ) {
 

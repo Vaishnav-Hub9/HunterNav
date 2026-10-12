@@ -4,6 +4,13 @@ package com.hunternav.domain.model
 enum class CameraMode { FOLLOW, OVERVIEW, FREE }
 
 /**
+ * Coarse lifecycle of a navigation session, provider-independent. Produced by the display
+ * pipeline adapters (Google Navigation SDK, legacy OSRM engine, simulator) into the single
+ * [DisplayNavigationState] contract consumed by the handlebar display renderer.
+ */
+enum class NavPhase { IDLE, NAVIGATING, REROUTING, ARRIVED, ERROR }
+
+/**
  * Rendering-ready navigation snapshot for map/UI layers and, in the future, for external
  * displays over Bluetooth (see docs/future-hardware.md). This is the contract the ESP32
  * display layer will consume; it deliberately contains no Android types.
@@ -22,7 +29,44 @@ data class DisplayNavigationState(
     val offRoute: Boolean,
     val rerouting: Boolean,
     val destinationReached: Boolean,
-)
+    // ------------------------------------------------------------------
+    // Display-pipeline extensions (Google Navigation SDK adapter path).
+    // All default so existing producers stay source-compatible.
+    // ------------------------------------------------------------------
+    /** Coarse session phase for the external display (idle/navigating/rerouting/arrived/error). */
+    val phase: NavPhase = NavPhase.IDLE,
+    /** Road-snapped position when the provider offers one; the pointer should follow this. */
+    val snapped: Coordinate? = null,
+    /** False when heading is missing or unreliable — the renderer must not rotate the pointer. */
+    val headingValid: Boolean = true,
+    /** Monotonic route identity: +1 whenever new route geometry is installed. */
+    val routeVersion: Long = 0L,
+    /** Epoch millis of the underlying location/navigation update (staleness checks). */
+    val timestampMs: Long = 0L,
+    /** Absolute ETA in epoch millis when the provider can compute one; null otherwise. */
+    val etaEpochMs: Long? = null,
+    /** True when this state was produced by a simulator, never by live navigation. */
+    val simulated: Boolean = false,
+) {
+    companion object {
+        /** Neutral, idle snapshot used as the initial value of provider state flows. */
+        fun idle(): DisplayNavigationState = DisplayNavigationState(
+            latitude = 0.0,
+            longitude = 0.0,
+            bearing = 0.0,
+            speedMps = 0.0,
+            maneuver = null,
+            distanceToManeuverMeters = -1.0,
+            roadName = null,
+            remainingDistanceMeters = -1.0,
+            remainingDurationSeconds = -1.0,
+            routeGeometry = emptyList(),
+            offRoute = false,
+            rerouting = false,
+            destinationReached = false,
+        )
+    }
+}
 
 /** Aggregated, UI-ready navigation state. */
 data class NavigationState(

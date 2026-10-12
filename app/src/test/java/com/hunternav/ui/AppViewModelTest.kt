@@ -531,4 +531,84 @@ class AppViewModelTest {
         assertEquals(routeBeforeReroute, vm.engine.state.value.activeRoute)
         assertEquals(2, routing.calls) // 1 preview fetch + 1 reroute attempt
     }
+
+    // -----------------------------------------------------------------
+    // Recent destinations (real selection history — never placeholders)
+    // -----------------------------------------------------------------
+
+    private val vasavi = Destination(
+        Coordinate(17.3807982, 78.3820908),
+        title = "Vasavi College of Engineering",
+        subtitle = "Uppal, Hyderabad",
+    )
+
+    @Test
+    fun `selecting a destination records it in recents with the exact coordinate`() = runTest {
+        val vm = AppViewModel(container())
+        vm.onDestinationSelected(charminar)
+        advanceUntilIdle()
+
+        val recent = vm.recents.value.first()
+        assertEquals("Charminar", recent.title)
+        assertEquals(17.3616, recent.coordinate.latitude, 1e-9)
+        assertEquals(78.4747, recent.coordinate.longitude, 1e-9)
+    }
+
+    @Test
+    fun `repeated destination changes replace routes and keep recents most-recent-first`() = runTest {
+        val vm = AppViewModel(container())
+        vm.onDestinationSelected(charminar)
+        vm.engine.onLocationUpdate(location())
+        vm.prepareRoute()
+        advanceUntilIdle()
+        assertTrue(vm.routes.value.isNotEmpty())
+
+        vm.onDestinationSelected(vasavi)
+        advanceUntilIdle()
+
+        // Previous trip state is gone; nothing stale is shown for the new destination.
+        assertTrue("stale routes must be discarded on destination change", vm.routes.value.isEmpty())
+        // Recents are real selections, most-recent-first, with exact coordinates (lat/lon order).
+        assertEquals(
+            listOf("Vasavi College of Engineering", "Charminar"),
+            vm.recents.value.map { it.title },
+        )
+        assertEquals(17.3807982, vm.recents.value.first().coordinate.latitude, 1e-9)
+        assertEquals(78.3820908, vm.recents.value.first().coordinate.longitude, 1e-9)
+    }
+
+    @Test
+    fun `re-selecting the same place moves it back to the front of recents`() = runTest {
+        val vm = AppViewModel(container())
+        vm.onDestinationSelected(charminar)
+        vm.onDestinationSelected(vasavi)
+        vm.onDestinationSelected(charminar)
+
+        assertEquals(
+            listOf("Charminar", "Vasavi College of Engineering"),
+            vm.recents.value.map { it.title },
+        )
+    }
+
+    @Test
+    fun `map long press records the pressed coordinate in recents`() = runTest {
+        val vm = AppViewModel(container())
+        vm.onMapLongPress(Coordinate(17.4000, 78.5000))
+        advanceUntilIdle()
+
+        assertEquals(Coordinate(17.4000, 78.5000), vm.recents.value.first().coordinate)
+    }
+
+    @Test
+    fun `reverse label upgrade never moves the pressed coordinate`() = runTest {
+        // FakeGeocoder answers with its OWN coordinate (17.4000, 78.5000) — the pressed pin is
+        // elsewhere. The label may upgrade; the destination coordinate must stay the pin.
+        val vm = AppViewModel(container(geocoder = FakeGeocoder()))
+        val pressed = Coordinate(17.3950, 78.4900)
+        vm.onMapLongPress(pressed)
+        advanceUntilIdle()
+
+        assertEquals("label upgrade must not move the destination", pressed, vm.destination.value?.coordinate)
+        assertEquals("Nearest Place", vm.destination.value?.title)
+    }
 }
