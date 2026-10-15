@@ -26,7 +26,7 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.HunterNav">
 
-        <!-- Google Navigation SDK / Maps key. Value comes from local.properties
+        <!-- Google Maps SDK key. Value comes from local.properties
              (google.maps.apiKey) via manifestPlaceholders — never committed to git. -->
         <meta-data
             android:name="com.google.android.geo.API_KEY"
@@ -43,13 +43,6 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
-        <!-- Turn-by-turn feed receiver for the display pipeline: the Navigation SDK binds to
-             this service after Navigator.registerServiceForNavUpdates() and delivers NavInfo
-             messages (~1 Hz) that are decoded into SDK-free snapshots. -->
-        <service
-            android:name=".display.nav.NavFeedService"
-            android:exported="true" />
 
         <!-- Display pipeline owner: streams rendered navigation frames to the ESP32 while a
              ride is in progress, including with the screen off (phone in pocket). -->

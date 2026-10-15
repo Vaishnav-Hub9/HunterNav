@@ -22,5 +22,5 @@ SOFTWARE.
 
 ---
 
-Map data © OpenStreetMap contributors (ODbL). Map tiles © OpenFreeMap.
-Routing by OSRM. Geocoding by Nominatim.
+Map data, routing and geocoding are served by Google Maps Platform; Google Maps Platform
+terms and attribution requirements apply to that data (see docs/google-maps.md).

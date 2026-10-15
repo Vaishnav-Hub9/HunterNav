@@ -41,6 +41,6 @@ fun SplashScreen(onReady: () -> Unit) {
             color = InkSecondary,
         )
         Spacer(Modifier.height(40.dp))
-        Text("OpenStreetMap · OpenFreeMap · OSRM", style = MaterialTheme.typography.labelMedium, color = Cobalt)
+        Text("Google Maps Platform", style = MaterialTheme.typography.labelMedium, color = Cobalt)
     }
 }

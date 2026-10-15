@@ -6,11 +6,11 @@ import kotlin.math.abs
 /**
  * Pure change-detection rules for map publishes (spec P1: fix severe map lag).
  *
- * Every `GeoJsonSource.setGeoJson` call re-serializes geometry and makes MapLibre re-tessellate
- * the layer on the main thread. The navigation tick loop runs every 500 ms and location fixes
- * arrive at 1–2 Hz; publishing identical content on each tick was wasted main-thread work and a
+ * Every route-line publish on the phone map re-serializes geometry and re-draws the polyline
+ * on the main thread. The navigation tick loop runs every 500 ms and location fixes arrive at
+ * 1–2 Hz; publishing identical content on each tick was wasted main-thread work and a
  * dominant source of stutter on mid-range devices. These rules decide whether a publish is
- * actually necessary. Pure Kotlin — unit-testable without MapLibre.
+ * actually necessary. Pure Kotlin — unit-testable without a map SDK.
  */
 class RenderThrottle {
 

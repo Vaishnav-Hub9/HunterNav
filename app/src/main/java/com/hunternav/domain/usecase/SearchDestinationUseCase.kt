@@ -5,7 +5,7 @@ import com.hunternav.domain.model.Coordinate
 import com.hunternav.domain.model.Destination
 import com.hunternav.domain.repository.GeocodingProvider
 
-/** Destination search over the geocoding abstraction (Nominatim in V1). */
+/** Destination search over the geocoding abstraction (Google Geocoding API). */
 class SearchDestinationUseCase(private val geocodingProvider: GeocodingProvider) {
 
     suspend operator fun invoke(query: String, near: Coordinate?, limit: Int = 8): AppResult<List<Destination>> =

@@ -6,7 +6,7 @@ import com.hunternav.domain.model.Destination
 import com.hunternav.domain.model.Route
 
 /**
- * Abstraction over routing engines (OSRM now; GraphHopper / offline later).
+ * Abstraction over routing engines (Google Routes API now; self-hosted engines later).
  * The navigation engine and UI depend only on this interface.
  */
 interface RoutingProvider {

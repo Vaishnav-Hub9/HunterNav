@@ -19,19 +19,20 @@ All code lives under `app/src/main/java/com/hunternav/display/`.
 ## Navigation data sources (`display/nav/`)
 
 `NavigationDataProvider` is the single source interface (`state: StateFlow<DisplayNavigationState>`,
-`startNavigation`, `stopNavigation`, `isAvailable`). Three implementations:
+`startNavigation`, `stopNavigation`, `isAvailable`). Two implementations:
 
 | Provider | When used | Backend |
 |----------|-----------|---------|
-| `GoogleNavigationAdapter` | `google.maps.apiKey` configured | Google Navigation SDK 8.0.0 — `Navigator`, road-snapped location, route segments, and the turn-by-turn feed received by `NavFeedService` (declared in the manifest; the SDK binds to it after `registerServiceForNavUpdates`) |
-| `EngineNavigationDataProvider` | default fallback, no key needed | HunterNav's own `NavigationEngine` + OSRM `RoutingProvider` — the same open-source stack as the phone UI |
+| `EngineNavigationDataProvider` | default | HunterNav's own `NavigationEngine` + the same Google-backed `RoutingProvider` as the phone UI |
 | `SimulatedNavigationDataProvider` | `display.simulator=true` | Deterministic route simulator; every state is flagged `simulated = true` |
 
-Selection happens once in `di/AppContainer.kt`. SDK-specific values are confined to the two
-Google classes: the feed is decoded into the SDK-free `NavFeedSnapshot` by `NavFeedService`,
-and maneuver constants are mapped in `GoogleManeuverMapper` (values javap-verified against the
-Navigation SDK 8.0.0 AAR). Everything downstream — `NavStateReducer`, renderer, encoder,
-transport, protocol — is SDK-free and JVM-testable.
+Selection happens once in `di/AppContainer.kt`; `DisplayForegroundService` (manifest,
+`foregroundServiceType="location"`) owns the pipeline so streaming survives the phone being
+pocketed mid-ride. The turn-by-turn feed plumbing — `NavFeedSnapshot`, `NavStateReducer`
+and `GoogleManeuverMapper` (maneuver constants javap-verified against Google's Navigation
+SDK 8.0.0 AAR) — is SDK-free, JVM-tested and kept as the contract for a future live
+feed integration. Everything downstream — renderer, encoder, transport, protocol — is
+SDK-free and JVM-testable.
 
 ### The state contract
 
@@ -49,11 +50,16 @@ distance/duration, ETA, route geometry with a monotonic `routeVersion`, and a co
 
 ## Rendering and encoding (`display/render/`)
 
-`FrameRenderer` is a plain `android.graphics` software renderer (480×320 default): heading-up
-route view using the Web Mercator math in `display/tiles/WebMercator.kt`, rider arrow fixed at
-center, top band with maneuver glyph + distance, footer with remaining distance, ETA and road
-name. Zoom keeps ~260 m ahead visible. `JpegEncoder` bounds frames to ≤96 KB by stepping
-quality down (never resolution — the wire message always carries the true width/height).
+`FrameRenderer` is a plain `android.graphics` software renderer (240×240 default,
+configurable via `display.width`/`display.height`): heading-up route view using the Web
+Mercator math in `display/tiles/WebMercator.kt`, rider arrow fixed at center, top band with
+maneuver glyph + distance, footer with remaining distance, ETA and road name. Zoom keeps
+~260 m ahead visible. `JpegEncoder` bounds frames to ≤96 KB by stepping quality down (never
+resolution — the wire message always carries the true width/height).
+
+`display/tiles/` also carries a tested Google Map Tiles API client (`GoogleMapTileProvider`:
+documented session flow, `Cache-Control`-aware in-memory `TileCache`) reserved for a
+basemap layer; the current renderer draws the route view on a plain background without one.
 
 ## Wire protocol (`display/transport/FrameProtocol.kt`)
 
@@ -84,10 +90,16 @@ opaque bytes; sequencing and framing belong to the pipeline.
 
 ```properties
 # local.properties (see local.properties.example) — never commit secrets
-google.maps.apiKey=<key for Navigation SDK + Map Tiles API>   # empty ⇒ OSRM engine fallback
-display.wsUrl=ws://192.168.4.1:81/display                     # ESP32 endpoint
-display.simulator=false                                       # true ⇒ offline simulator source
+google.maps.apiKey=<key: Maps SDK, Routes API, Geocoding API, Map Tiles API>
+display.wsUrl=ws://192.168.4.1:81/display   # ESP32 endpoint
+display.simulator=false                     # true ⇒ offline simulator source
+display.width=240                           # panel resolution
+display.height=240
 ```
+
+Without a key the pipeline still runs end-to-end with the simulator source, and
+`EngineNavigationDataProvider` reports a clear configuration error for routing instead of
+silently switching engines ([google-maps.md](google-maps.md)).
 
 ## Testing
 

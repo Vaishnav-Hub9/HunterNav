@@ -11,7 +11,6 @@ import com.hunternav.domain.model.Coordinate
 import com.hunternav.domain.model.Destination
 import com.hunternav.domain.repository.GeocodingProvider
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -21,20 +20,29 @@ import okhttp3.Request
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Nominatim-based geocoder (low-volume OSM service, development use).
+ * Google Geocoding API provider for destination search and reverse geocoding
+ * (docs/google-maps.md). Selected in [com.hunternav.di.AppContainer] when
+ * `google.maps.apiKey` is configured.
  *
- * Usage-policy compliance (spec §5):
- *  - one app-wide rate limiter: at most 1 request/second across search AND reverse,
- *  - successful searches are cached briefly so repeated queries never hit the network,
- *  - identified with a User-Agent, requests only what the caller explicitly submits,
- *  - the base URL is configurable via BuildConfig for self-hosting later.
+ * Endpoints (both authenticate with the `key` query parameter):
+ *  - search:   `maps.googleapis.com/maps/api/geocode/json?address=…&region=IN`
+ *  - reverse:  `maps.googleapis.com/maps/api/geocode/json?latlng=…`
  *
- * Callers must NOT pass live GPS coordinates ([near]) for ordinary text search — the
- * viewbox hint is only for the rare case where proximity is genuinely required, and the
- * production search path does not use it.
+ * Contract guarantees (same as the previous provider):
+ *  - results WITHOUT usable coordinates are dropped, never routed to as a fake (0,0);
+ *  - reverse geocoding is LABEL-ONLY: the pressed coordinate stays authoritative — Google's
+ *    response describes the nearest mapped entity which can sit metres away from the pin;
+ *  - no reverse lookup hit ⇒ the destination becomes a "Dropped pin" at the pressed
+ *    coordinate rather than a failure — the pin is already valid without a name;
+ *  - ≤1 request/second app-wide across search AND reverse ([RequestRateLimiter]);
+ *  - successful searches cached ~10 minutes so repeated queries never hit the network;
+ *  - the caller's GPS position is never sent with ordinary text search — an explicit
+ *    proximity hint ([search]'s `near`) is the only way a location bias is transmitted;
+ *  - 401/403 surface with messages naming the credential problem; nothing retries forever.
  */
-class NominatimGeocodingProvider(
+class GoogleGeocodingProvider(
     private val baseUrl: String,
+    private val apiKey: String,
     private val networkClient: HttpTransport = NetworkClient(),
     private val rateLimiter: RequestRateLimiter = RequestRateLimiter(MIN_REQUEST_INTERVAL_MS),
     private val nowMs: () -> Long = System::currentTimeMillis,
@@ -51,10 +59,16 @@ class NominatimGeocodingProvider(
     private data class CachedSearch(val fetchedAtMs: Long, val results: List<Destination>)
 
     override suspend fun search(query: String, near: Coordinate?, limit: Int): AppResult<List<Destination>> {
+        if (apiKey.isBlank()) {
+            return AppResult.Failure(
+                AppErrorKind.SERVER,
+                "Google geocoding is not configured (set google.maps.apiKey, see docs/google-maps.md)",
+            )
+        }
         if (query.isBlank()) return AppResult.Success(emptyList())
         val normalized = query.trim().lowercase()
 
-        // Cache hit: repeated queries are answered locally (policy: cache repeated queries).
+        // Cache hit: repeated queries are answered locally.
         synchronized(searchCache) {
             val cached = searchCache[normalized]
             if (cached != null && nowMs() - cached.fetchedAtMs <= cacheTtlMs) {
@@ -66,24 +80,24 @@ class NominatimGeocodingProvider(
         val requestId = requestSeq.incrementAndGet()
         val startedAt = nowMs()
         val url = baseUrl.trimEnd('/').toHttpUrl().newBuilder()
-            .addPathSegment("search")
-            .addQueryParameter("q", query)
-            .addQueryParameter("format", "jsonv2")
-            .addQueryParameter("addressdetails", "1")
-            .addQueryParameter("limit", limit.coerceIn(1, 20).toString())
+            .addPathSegments("maps/api/geocode/json")
+            .addQueryParameter("address", query)
+            .addQueryParameter("language", "en")
+            .addQueryParameter("region", "IN")
+            // Optional proximity bias ONLY when the caller explicitly supplies one.
             .apply {
-                // Optional proximity hint ONLY when the caller explicitly supplies one.
                 if (near != null) {
-                    val dLat = 0.7
-                    val dLon = 0.7
-                    addQueryParameter("viewbox", "${near.longitude - dLon},${near.latitude + dLat},${near.longitude + dLon},${near.latitude - dLat}")
+                    addQueryParameter("location", "${near.latitude},${near.longitude}")
+                    addQueryParameter("radius", "50000")
                 }
             }
+            .addQueryParameter("key", apiKey)
             .build()
 
         DebugLog.d(
             "GEOCODING_REQUEST",
-            "req=$requestId provider=nominatim source=search query=\"$query\" near=${if (near != null) "supplied" else "none"} limit=$limit",
+            "req=$requestId provider=google source=search query=\"$query\" " +
+                "near=${if (near != null) "supplied" else "none"} limit=$limit",
         )
 
         return try {
@@ -96,14 +110,14 @@ class NominatimGeocodingProvider(
                 networkClient.execute(request).use { response ->
                     if (!response.isSuccessful) {
                         DebugLog.d("GEOCODING_RESULT", "req=$requestId source=search failed http=${response.code} elapsed_ms=${nowMs() - startedAt}")
-                        AppResult.Failure(AppErrorKind.SERVER, "HTTP ${response.code}")
+                        AppResult.Failure(AppErrorKind.SERVER, httpErrorMessage(response.code, "search"))
                     } else {
                         val body = response.body.string()
                         if (body.isBlank()) {
                             DebugLog.d("GEOCODING_RESULT", "req=$requestId source=search failed reason=empty_body")
                             AppResult.Failure(AppErrorKind.PARSE, "Empty response body")
                         } else {
-                            parseSearch(body).also { r ->
+                            parseResults(body).also { r ->
                                 if (r is AppResult.Success) {
                                     // Cache only real results; failures/no-results are not sticky.
                                     synchronized(searchCache) {
@@ -111,7 +125,7 @@ class NominatimGeocodingProvider(
                                             val eldest = searchCache.entries.iterator()
                                             if (eldest.hasNext()) eldest.next()
                                         }
-                                        searchCache[normalized] = CachedSearch(nowMs(), r.value)
+                                        searchCache[normalized] = CachedSearch(nowMs(), r.value.take(limit.coerceIn(1, 20)))
                                     }
                                 }
                                 DebugLog.d(
@@ -141,19 +155,25 @@ class NominatimGeocodingProvider(
     }
 
     override suspend fun reverse(coordinate: Coordinate): AppResult<Destination> {
+        if (apiKey.isBlank()) {
+            return AppResult.Failure(
+                AppErrorKind.SERVER,
+                "Google geocoding is not configured (set google.maps.apiKey, see docs/google-maps.md)",
+            )
+        }
         val requestId = requestSeq.incrementAndGet()
         val startedAt = nowMs()
         val url = baseUrl.trimEnd('/').toHttpUrl().newBuilder()
-            .addPathSegment("reverse")
-            .addQueryParameter("lat", coordinate.latitude.toString())
-            .addQueryParameter("lon", coordinate.longitude.toString())
-            .addQueryParameter("format", "jsonv2")
-            .addQueryParameter("addressdetails", "1")
+            .addPathSegments("maps/api/geocode/json")
+            .addQueryParameter("latlng", "${coordinate.latitude},${coordinate.longitude}")
+            .addQueryParameter("language", "en")
+            .addQueryParameter("result_type", "street_address|route|premise|point_of_interest|locality")
+            .addQueryParameter("key", apiKey)
             .build()
 
         DebugLog.d(
             "GEOCODING_REQUEST",
-            "req=$requestId provider=nominatim source=reverse lat=${coordinate.latitude} lon=${coordinate.longitude}",
+            "req=$requestId provider=google source=reverse lat=${coordinate.latitude} lon=${coordinate.longitude}",
         )
 
         return try {
@@ -166,7 +186,7 @@ class NominatimGeocodingProvider(
                 networkClient.execute(request).use { response ->
                     if (!response.isSuccessful) {
                         DebugLog.d("GEOCODING_RESULT", "req=$requestId source=reverse failed http=${response.code} elapsed_ms=${nowMs() - startedAt}")
-                        AppResult.Failure(AppErrorKind.SERVER, "HTTP ${response.code}")
+                        AppResult.Failure(AppErrorKind.SERVER, httpErrorMessage(response.code, "reverse"))
                     } else {
                         val body = response.body.string()
                         if (body.isBlank()) {
@@ -199,30 +219,65 @@ class NominatimGeocodingProvider(
         }
     }
 
-    /** Parses a Nominatim `jsonv2` search array. Internal so unit tests can exercise it. */
-    internal fun parseSearch(body: String): AppResult<List<Destination>> {
-        return try {
-            val arr = json.parseToJsonElement(body).jsonArray
-            // Coordinates are mandatory: results without lat/lon are dropped, never (0,0).
-            AppResult.Success(arr.mapNotNull { el -> destinationFrom(el.jsonObject, fallbackCoordinate = null) })
+    private fun httpErrorMessage(code: Int, source: String): String = when (code) {
+        400 -> "Geocoding request was rejected as invalid (HTTP 400)."
+        401, 403 -> "Google API key rejected or Geocoding API not enabled (HTTP $code). " +
+            "Check google.maps.apiKey and that the Geocoding API is enabled for the project."
+        429 -> "Geocoding service is rate limiting requests (HTTP 429). Try again shortly."
+        in 500..599 -> "Geocoding service error (HTTP $code)."
+        else -> "Geocoding $source failed (HTTP $code)."
+    }
+
+    /**
+     * Parses a Geocoding API response body into destinations. Internal so unit tests can
+     * exercise it with captured fixtures. Honors the top-level `status` field —
+     * ZERO_RESULTS is an empty success, REQUEST_DENIED names the credential problem.
+     */
+    internal fun parseResults(body: String): AppResult<List<Destination>> {
+        val obj = try {
+            json.parseToJsonElement(body).jsonObject
         } catch (e: Exception) {
-            AppResult.Failure(AppErrorKind.PARSE, "Malformed geocoder response", e)
+            return AppResult.Failure(AppErrorKind.PARSE, "Malformed geocoder response", e)
+        }
+        return when (val status = obj["status"]?.jsonPrimitive?.content ?: "") {
+            "OK" -> {
+                val results = obj["results"]?.jsonArray
+                // Coordinates are mandatory: results without a geometry are dropped,
+                // never (0,0).
+                AppResult.Success(results?.mapNotNull { el ->
+                    destinationFrom(el.jsonObject, fallbackCoordinate = null)
+                } ?: emptyList())
+            }
+            "ZERO_RESULTS" -> AppResult.Success(emptyList())
+            "REQUEST_DENIED" -> AppResult.Failure(
+                AppErrorKind.SERVER,
+                "Google geocoding request denied — check google.maps.apiKey and that the " +
+                    "Geocoding API is enabled.",
+            )
+            "OVER_QUERY_LIMIT" -> AppResult.Failure(
+                AppErrorKind.SERVER,
+                "Google geocoding quota exceeded (OVER_QUERY_LIMIT). Try again later.",
+            )
+            else -> AppResult.Failure(AppErrorKind.SERVER, "Geocoding failed (status=$status)")
         }
     }
 
     /**
-     * Parses a Nominatim reverse response for [coordinate]. The pressed coordinate is
-     * AUTHORITATIVE: the response supplies the label (name, address), but its own lat/lon
-     * describe the nearest mapped entity, which can sit tens of metres away from the pin —
-     * returning those would silently move the user's destination (marker + route endpoint).
+     * Parses a reverse-geocode response for [coordinate]. The pressed coordinate is
+     * AUTHORITATIVE: the response supplies the label, but its own lat/lng describe the
+     * nearest mapped entity, which can sit tens of metres away from the pin — returning
+     * those would silently move the user's destination (marker + route endpoint).
      */
     internal fun parseReverse(body: String, coordinate: Coordinate): AppResult<Destination> {
         return try {
             val obj = json.parseToJsonElement(body).jsonObject
-            if (obj.containsKey("error")) {
+            val status = obj["status"]?.jsonPrimitive?.content ?: ""
+            if (status != "OK") {
+                // No address found: the pressed pin is already a valid destination.
                 AppResult.Success(Destination(coordinate, title = "Dropped pin"))
             } else {
-                val resolved = destinationFrom(obj, fallbackCoordinate = coordinate)
+                val resolved = obj["results"]?.jsonArray?.firstOrNull()?.jsonObject
+                    ?.let { destinationFrom(it, fallbackCoordinate = coordinate) }
                     ?: Destination(coordinate, title = "Dropped pin")
                 AppResult.Success(resolved.copy(coordinate = coordinate))
             }
@@ -232,39 +287,36 @@ class NominatimGeocodingProvider(
     }
 
     /**
-     * Maps one Nominatim object to a [Destination]. Returns null when the response carries no
-     * usable coordinates and no [fallbackCoordinate] is available — a destination without
-     * latitude/longitude can never be routed to, so it must not become a fake (0,0) entry.
+     * Maps one Geocoding API result object to a [Destination]. Returns null when the
+     * response carries no usable coordinates and no [fallbackCoordinate] is available —
+     * a destination without latitude/longitude can never be routed to, so it must not
+     * become a fake (0,0) entry.
      */
     private fun destinationFrom(obj: JsonObject, fallbackCoordinate: Coordinate?): Destination? {
-        val name = obj["name"]?.jsonPrimitive?.takeIf { it.isString && it.content.isNotBlank() }
-        val displayName = obj["display_name"]?.jsonPrimitive?.content ?: ""
-        val address = obj["address"] as? JsonObject
-        val subtitle = address?.let {
-            val road = it["road"]?.let { v -> runCatching { v.jsonPrimitive.content }.getOrNull() }
-            val city = it["city"]?.let { v -> runCatching { v.jsonPrimitive.content }.getOrNull() }
-                ?: it["town"]?.let { v -> runCatching { v.jsonPrimitive.content }.getOrNull() }
-                ?: it["village"]?.let { v -> runCatching { v.jsonPrimitive.content }.getOrNull() }
-            listOfNotNull(road, city).joinToString(", ").ifBlank { null }
-        }
-
-        val lat = obj["lat"]?.jsonPrimitive?.content?.toDoubleOrNull()
-        val lon = obj["lon"]?.jsonPrimitive?.content?.toDoubleOrNull()
+        val location = obj["geometry"]?.jsonObject?.get("location")?.jsonObject
+        val lat = location?.get("lat")?.jsonPrimitive?.content?.toDoubleOrNull()
+        val lng = location?.get("lng")?.jsonPrimitive?.content?.toDoubleOrNull()
         val coordinate = when {
-            lat != null && lon != null -> Coordinate(lat, lon)
+            lat != null && lng != null -> Coordinate(lat, lng)
             fallbackCoordinate != null -> fallbackCoordinate
             else -> return null
         }
 
+        val formatted = obj["formatted_address"]?.jsonPrimitive?.content ?: ""
+        // Title = first component ("Charminar, Hyderabad"), subtitle = the rest — the same
+        // presentation contract the previous geocoder had.
+        val title = formatted.substringBefore(',').ifBlank { "Dropped pin" }
+        val subtitle = formatted.substringAfter(',', "").trim().ifBlank { null }
+
         return Destination(
             coordinate = coordinate,
-            title = name?.content ?: displayName.substringBefore(',').ifBlank { "Dropped pin" },
-            subtitle = subtitle ?: displayName.substringAfter(',').trim().ifBlank { null },
+            title = title,
+            subtitle = subtitle,
         )
     }
 
     private companion object {
-        /** Public Nominatim policy: at most one request per second, app-wide. */
+        /** At most one geocoding request per second, app-wide. */
         const val MIN_REQUEST_INTERVAL_MS = 1_000L
         /** Successful search results are reused for a few minutes. */
         const val CACHE_TTL_MS = 10 * 60 * 1_000L

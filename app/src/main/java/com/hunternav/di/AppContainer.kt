@@ -1,11 +1,9 @@
 package com.hunternav.di
 
-import android.app.Application
 import android.content.Context
 import com.hunternav.BuildConfig
 import com.hunternav.core.util.DebugLog
-import com.hunternav.data.geocoding.MapplsGeocodingProvider
-import com.hunternav.data.geocoding.NominatimGeocodingProvider
+import com.hunternav.data.geocoding.GoogleGeocodingProvider
 import com.hunternav.data.location.AndroidLocationProvider
 import com.hunternav.data.location.FakeLocationProvider
 import com.hunternav.data.network.NetworkClient
@@ -13,10 +11,9 @@ import com.hunternav.data.recent.InMemoryPreferenceBackend
 import com.hunternav.data.recent.RecentDestinationsStore
 import com.hunternav.data.recent.SharedPreferencesBackend
 import com.hunternav.core.result.AppResult
-import com.hunternav.data.routing.MapplsRoutingProvider
+import com.hunternav.data.routing.GoogleRoutesProvider
 import com.hunternav.display.DisplayPipeline
 import com.hunternav.display.nav.EngineNavigationDataProvider
-import com.hunternav.display.nav.GoogleNavigationAdapter
 import com.hunternav.display.nav.NavigationDataProvider
 import com.hunternav.display.nav.SimulatedNavigationDataProvider
 import com.hunternav.display.transport.DisplayTransport
@@ -83,52 +80,47 @@ class AppContainer(
     private val routingNetworkClient = NetworkClient(routing = true)
 
     /**
-     * Routing is Mappls-only (MapmyIndia Direction API v1, traffic-aware `route_traffic` with the
-     * two-wheeler profile — see docs/mappls.md). There is deliberately NO OSRM/other-provider
-     * fallback: without a Console token the app surfaces a clear configuration error through the
-     * normal error path instead of silently routing with a different engine's free-flow numbers.
+     * Routing is Google-only (Routes API v2, traffic-aware TWO_WHEELER mode — see
+     * docs/google-maps.md). There is deliberately NO fallback engine: without a Google
+     * Maps key the app surfaces a clear configuration error through the normal error path
+     * instead of silently routing with a different engine's free-flow numbers.
      */
-    val routingProvider: RoutingProvider = routingProviderOverride ?: if (BuildConfig.MAPPLS_ACCESS_TOKEN.isNotBlank()) {
-        DebugLog.d("ROUTING_PROVIDER", "selected=mappls (accessToken configured)")
-        MapplsRoutingProvider(
-            baseUrl = BuildConfig.MAPPLS_ROUTING_BASE_URL,
-            accessToken = BuildConfig.MAPPLS_ACCESS_TOKEN,
-            profile = BuildConfig.MAPPLS_ROUTING_PROFILE,
+    val routingProvider: RoutingProvider = routingProviderOverride ?: if (BuildConfig.GOOGLE_MAPS_API_KEY.isNotBlank()) {
+        DebugLog.d("ROUTING_PROVIDER", "selected=google_routes (google.maps.apiKey configured)")
+        GoogleRoutesProvider(
+            baseUrl = BuildConfig.GOOGLE_ROUTES_BASE_URL,
+            apiKey = BuildConfig.GOOGLE_MAPS_API_KEY,
             networkClient = routingNetworkClient,
         )
     } else {
-        DebugLog.d("ROUTING_PROVIDER", "selected=mappls (UNCONFIGURED: mappls.accessToken missing)")
+        DebugLog.d("ROUTING_PROVIDER", "selected=google_routes (UNCONFIGURED: google.maps.apiKey missing)")
         UnconfiguredRoutingProvider
     }
 
-    /** Diagnostic/attribution name of the active routing engine ("mappls" or "mappls-unconfigured"). */
+    /** Diagnostic/attribution name of the active routing engine ("google_routes" or "google_routes-unconfigured"). */
     val routingProviderTag: String =
-        if (routingProvider is MapplsRoutingProvider) "mappls" else "mappls-unconfigured"
+        if (routingProvider is GoogleRoutesProvider) "google_routes" else "google_routes-unconfigured"
 
     /**
-     * Destination search + reverse geocoding. Nominatim stays the default (open, no key);
-     * one Mappls Console access token (mappls.accessToken) switches search + reverse-geocode
-     * to the official Mappls REST APIs (docs/mappls.md). [geocodingProviderTag]
-     * names the active one for diagnostics and in-app attribution.
+     * Destination search + reverse geocoding through the Google Geocoding API
+     * (docs/google-maps.md). [geocodingProviderTag] names the active one for diagnostics
+     * and in-app attribution.
      */
-    val geocodingProvider: GeocodingProvider = geocodingProviderOverride ?: if (BuildConfig.MAPPLS_ACCESS_TOKEN.isNotBlank()) {
-        DebugLog.d("GEOCODING_PROVIDER", "selected=mappls (access token configured)")
-        MapplsGeocodingProvider(
-            baseUrl = BuildConfig.MAPPLS_SEARCH_BASE_URL,
-            accessToken = BuildConfig.MAPPLS_ACCESS_TOKEN,
+    val geocodingProvider: GeocodingProvider = geocodingProviderOverride ?: if (BuildConfig.GOOGLE_MAPS_API_KEY.isNotBlank()) {
+        DebugLog.d("GEOCODING_PROVIDER", "selected=google (google.maps.apiKey configured)")
+        GoogleGeocodingProvider(
+            baseUrl = BuildConfig.GOOGLE_GEOCODING_BASE_URL,
+            apiKey = BuildConfig.GOOGLE_MAPS_API_KEY,
             networkClient = networkClient,
         )
     } else {
-        DebugLog.d("GEOCODING_PROVIDER", "selected=nominatim (default; no Mappls token)")
-        NominatimGeocodingProvider(
-            baseUrl = BuildConfig.GEOCODER_BASE_URL,
-            networkClient = networkClient,
-        )
+        DebugLog.d("GEOCODING_PROVIDER", "selected=google (UNCONFIGURED: google.maps.apiKey missing)")
+        UnconfiguredGeocodingProvider
     }
 
-    /** Diagnostic/attribution name of the active geocoder ("nominatim" or "mappls"). */
+    /** Diagnostic/attribution name of the active geocoder ("google" or "google-unconfigured"). */
     val geocodingProviderTag: String =
-        if (geocodingProvider is MapplsGeocodingProvider) "mappls" else "nominatim"
+        if (geocodingProvider is GoogleGeocodingProvider) "google" else "google-unconfigured"
 
     val realLocationProvider: LocationProvider = AndroidLocationProvider(context)
 
@@ -170,15 +162,10 @@ class AppContainer(
 
     /**
      * Navigation data source for the display, in order of preference:
-     *  1. Google Navigation SDK — when a Google Maps key is configured;
-     *  2. HunterNav's own engine — the same Mappls-backed routing the phone UI uses;
-     *  3. Simulator — dev builds without any backend (display can be exercised offline).
+     *  1. HunterNav's own engine — the same Google-backed routing the phone UI uses;
+     *  2. Simulator — dev builds without any backend (display can be exercised offline).
      */
     val displayProvider: NavigationDataProvider = when {
-        BuildConfig.GOOGLE_MAPS_API_KEY.isNotBlank() && context.applicationContext is Application -> {
-            DebugLog.d("DISPLAY_PROVIDER", "selected=google_navigation_sdk (key configured)")
-            GoogleNavigationAdapter(context.applicationContext as Application, BuildConfig.GOOGLE_MAPS_API_KEY)
-        }
         BuildConfig.DISPLAY_SIMULATOR -> {
             DebugLog.d("DISPLAY_PROVIDER", "selected=simulated (display.simulator=true)")
             SimulatedNavigationDataProvider(
@@ -187,7 +174,7 @@ class AppContainer(
             )
         }
         else -> {
-            DebugLog.d("DISPLAY_PROVIDER", "selected=hunternav_engine (no Google key, simulator off)")
+            DebugLog.d("DISPLAY_PROVIDER", "selected=hunternav_engine (google-backed routing)")
             EngineNavigationDataProvider(
                 routingProvider = routingProvider,
                 locationProvider = realLocationProvider,
@@ -207,12 +194,13 @@ class AppContainer(
                 width = BuildConfig.DISPLAY_WIDTH,
                 height = BuildConfig.DISPLAY_HEIGHT,
             ),
-        scope = appScope,
-    )
+            scope = appScope,
+        )
+    }
 }
 
 /**
- * Stands in for [MapplsRoutingProvider] when `mappls.accessToken` is not set. Returns the setup
+ * Stands in for [GoogleRoutesProvider] when `google.maps.apiKey` is not set. Returns the setup
  * error through the standard [AppResult] path so route preview/navigation show a clear message —
  * it never contacts any routing server. Missing auth must fail loudly, never silently switch
  * providers (different engines give different distance/ETA numbers).
@@ -224,8 +212,32 @@ private object UnconfiguredRoutingProvider : RoutingProvider {
         alternatives: Boolean,
     ): AppResult<List<Route>> = AppResult.Failure(
         kind = com.hunternav.core.result.AppErrorKind.UNKNOWN,
-        message = "Mappls routing is not configured. Add mappls.accessToken=<your Console token> " +
-            "to local.properties and rebuild (see docs/mappls.md).",
+        message = "Google routing is not configured. Add google.maps.apiKey=<your key> " +
+            "to local.properties and rebuild (see docs/google-maps.md).",
     )
 }
+
+/**
+ * Stands in for [GoogleGeocodingProvider] when `google.maps.apiKey` is not set — destination
+ * search and reverse geocoding report a clear configuration error instead of silently using
+ * another provider.
+ */
+private object UnconfiguredGeocodingProvider : GeocodingProvider {
+    override suspend fun search(
+        query: String,
+        near: Coordinate?,
+        limit: Int,
+    ): AppResult<List<com.hunternav.domain.model.Destination>> = AppResult.Failure(
+        kind = com.hunternav.core.result.AppErrorKind.SERVER,
+        message = "Google geocoding is not configured. Add google.maps.apiKey=<your key> " +
+            "to local.properties and rebuild (see docs/google-maps.md).",
+    )
+
+    override suspend fun reverse(
+        coordinate: Coordinate,
+    ): AppResult<com.hunternav.domain.model.Destination> = AppResult.Failure(
+        kind = com.hunternav.core.result.AppErrorKind.SERVER,
+        message = "Google geocoding is not configured. Add google.maps.apiKey=<your key> " +
+            "to local.properties and rebuild (see docs/google-maps.md).",
+    )
 }

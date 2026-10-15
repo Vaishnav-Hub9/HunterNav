@@ -18,9 +18,9 @@ import kotlinx.coroutines.launch
 
 /**
  * Fallback navigation data source for the display pipeline, backed by HunterNav's own
- * NavigationEngine (OSRM routing + own off-route/reroute/arrival logic). Used when no Google
- * API key is configured, so the renderer/transport pipeline works end-to-end with the same
- * open-source stack as the phone UI — no paid API required.
+ * NavigationEngine (Google-backed routing + own off-route/reroute/arrival logic). This is
+ * the default display source; the simulator replaces it when `display.simulator=true`, so
+ * the renderer/transport pipeline works end-to-end without any API key or network access.
  *
  * It routes with [RoutingProvider], starts the engine with the first route, feeds it live
  * location updates from [LocationProvider], and maps the engine's `NavigationState` into the
@@ -34,7 +34,7 @@ class EngineNavigationDataProvider(
     private val nowMs: () -> Long = System::currentTimeMillis,
 ) : NavigationDataProvider {
 
-    override val providerName: String = "HunterNav engine (OSRM)"
+    override val providerName: String = "HunterNav engine"
 
     private val engine = NavigationEngine(
         routingProvider = routingProvider,

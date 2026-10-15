@@ -6,14 +6,12 @@ import com.hunternav.domain.model.LocationData
 import com.hunternav.domain.model.Route
 
 /**
- * Engine-agnostic map surface used by every screen. Two implementations exist:
- *  - [MapplsMapController]  — Mappls Maps SDK (primary when the local Mappls auth files are
- *                             present at build time, see docs/mappls.md);
- *  - [MapController]        — MapLibre + OpenFreeMap (always-available fallback, no key).
+ * Engine-agnostic map surface used by every screen. The single implementation is
+ * [GoogleMapsSurface] — Google Maps SDK (docs/google-maps.md).
  *
  * Screens only ever see this interface and the domain models, so swapping or testing the map
- * engine never touches UI code. Both implementations own their native view lifecycle
- * (onCreate/onStart/onResume/onPause/onStop/onDestroy) via [HunterNavMapView]-style wrappers.
+ * engine never touches UI code. The implementation owns its native view lifecycle
+ * (onCreate/onStart/onResume/onPause/onStop/onDestroy) via the [GoogleMapView] wrapper.
  */
 interface MapSurface {
 

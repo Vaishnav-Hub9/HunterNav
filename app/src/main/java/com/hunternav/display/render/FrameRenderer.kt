@@ -16,7 +16,7 @@ import kotlin.math.sin
 
 /**
  * Software renderer that turns a [DisplayNavigationState] into a small RGB bitmap for the
- * external handlebar display (JPEG frames over the wire protocol). No MapLibre, no GPU —
+ * external handlebar display (JPEG frames over the wire protocol). No map SDK, no GPU —
  * plain android.graphics so it runs on any thread and produces deterministic output.
  *
  * Layout scales from the original 480×320 design to any resolution (the initial hardware

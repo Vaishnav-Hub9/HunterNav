@@ -1,10 +1,14 @@
-# Routing Provider Evaluation — OSRM today, Valhalla as the regional option
+# Routing Provider Evaluation — self-hosted engines vs. the current Google stack
 
-Status: evaluation only (Oct 2026). **No alternative backend is deployed or integrated**;
+Status: living evaluation (Oct 2026). The production provider since the Google-only
+migration is the **Google Routes API v2** (`GoogleRoutesProvider`, traffic-aware
+TWO_WHEELER — see [google-maps.md](google-maps.md)); the OSRM section below is retained as
+historical context and as the blueprint for a self-hosted option (see
+[../backend/future-self-hosting.md](../backend/future-self-hosting.md)).
 `RoutingProvider` (domain/repository) remains the single abstraction, so any provider below
 can be benchmarked or swapped without touching the UI or navigation engine.
 
-## Current provider: OSRM public demo
+## Historical: OSRM public demo (pre-Google migration)
 
 - Endpoint: `https://router.project-osrm.org/route/v1/driving/…` (configurable via
   `osrm.baseUrl`). Profile: `driving` (car) — **not motorcycle-optimized**; a cycling profile
@@ -32,13 +36,13 @@ Research findings (sources at the end):
 
 ## Recommendation
 
-1. **Keep OSRM behind `RoutingProvider` for now** — it works and is validated end-to-end.
-2. **Deploy a regional Valhalla instance when road-grade reroute latency matters** (the
-   ~2-minute reroute report was dominated by client-side publish cost + slow public server;
-   both are addressed, but a self-hosted engine is the real fix for server latency). Work
-   items: provision the VM above, clip the Southern Zone extract, run the scripted Docker
-   image, then implement `ValhallaRoutingProvider` (request builder + maneuver mapping +
-   spoken-instruction mapping) and benchmark against `OsrmRoutingProvider` using the same
+1. **Keep Google Routes API v2 behind `RoutingProvider` for production** — it is validated
+   end-to-end and provides live traffic, which no self-hosted open-source engine here does.
+2. **Deploy a regional Valhalla instance when self-hosting matters** (cost control, data
+   locality, road-grade reroute latency without per-request billing). Work items:
+   provision the VM above, clip the Southern Zone extract, run the scripted Docker image,
+   then implement `ValhallaRoutingProvider` (request builder + maneuver mapping +
+   spoken-instruction mapping) and benchmark against `GoogleRoutesProvider` using the same
    fixture trips. Nothing in the UI changes.
 3. **Traffic-aware ETA is out of scope** until a licensed feed exists; the UI keeps labeling
    ETA as an estimate.

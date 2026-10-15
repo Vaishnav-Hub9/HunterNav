@@ -5,7 +5,7 @@ enum class CameraMode { FOLLOW, OVERVIEW, FREE }
 
 /**
  * Coarse lifecycle of a navigation session, provider-independent. Produced by the display
- * pipeline adapters (Google Navigation SDK, legacy OSRM engine, simulator) into the single
+ * pipeline adapters (HunterNav's own engine, simulator) into the single
  * [DisplayNavigationState] contract consumed by the handlebar display renderer.
  */
 enum class NavPhase { IDLE, NAVIGATING, REROUTING, ARRIVED, ERROR }

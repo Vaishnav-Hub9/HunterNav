@@ -6,8 +6,8 @@ import com.hunternav.domain.model.ManeuverType
 import com.hunternav.domain.model.NavPhase
 
 /**
- * Plain-data mirror of the Google turn-by-turn feed (`NavInfo`/`StepInfo`). The Messenger
- * service decodes SDK types into this immediately, so everything downstream — including the
+ * Plain-data mirror of a turn-by-turn feed (`NavInfo`/`StepInfo`-style). Feed payloads are
+ * decoded into this plain shape immediately, so everything downstream — including the
  * reducer below and all unit tests — is SDK-free and JVM-testable.
  */
 data class NavFeedSnapshot(
@@ -32,9 +32,8 @@ data class NavFeedSnapshot(
 }
 
 /**
- * Location as delivered by [com.hunternav.navigation.RoadSnappedLocationProvider]: the
- * road-snapped fix when available, plus the raw fix as fallback and a validity flag for
- * the bearing.
+ * Location fix for the reducer: the road-snapped fix when available, plus the raw fix as
+ * fallback and a validity flag for the bearing.
  */
 data class NavLocationFix(
     val latitude: Double,
@@ -49,7 +48,7 @@ data class NavLocationFix(
  * the renderer/transport from three independent input streams:
  *  - location fixes (road-snapped preferred, raw accepted),
  *  - turn-by-turn feed snapshots (maneuver, distances, ETA components, rerouting),
- *  - route geometry updates (from `Navigator.getRouteSegments()`, with a version counter).
+ *  - route geometry updates (with a version counter).
  *
  * Rules encoded here (all covered by tests):
  *  - the pointer position prefers the road-snapped fix;

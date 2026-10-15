@@ -16,9 +16,9 @@ interface HttpTransport {
 }
 
 /**
- * Enforces a minimum interval between request *starts* — the public Nominatim usage policy
- * allows at most one request per second, and the public OSRM demo server should be treated
- * the same way. Reservation happens under a mutex (so concurrent callers are spaced correctly)
+ * Enforces a minimum interval between request *starts* — Google's geocoding/routing usage
+ * guidelines ask client apps to stay well under sustained burst rates, and the app policy
+ * is conservative (1 request/second, provider-independent). Reservation happens under a mutex (so concurrent callers are spaced correctly)
  * but the network call itself runs outside the lock, so a slow request never deadlocks the
  * next one; each caller still starts at least [minIntervalMs] after the previous one.
  *

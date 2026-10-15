@@ -8,15 +8,15 @@ import kotlinx.coroutines.flow.StateFlow
  * Source of navigation data for the handlebar display pipeline.
  *
  * The renderer, JPEG encoder and Wi-Fi transport only ever see this interface and the stable
- * [DisplayNavigationState] model, so the navigation engine behind it (Google Navigation SDK,
- * the legacy OSRM engine, or a simulator) can be swapped or tested independently.
+ * [DisplayNavigationState] model, so the navigation engine behind it (HunterNav's own
+ * engine or a simulator) can be swapped or tested independently.
  */
 interface NavigationDataProvider {
 
     /** Latest navigation snapshot. Always emits, starting from an idle state. */
     val state: StateFlow<DisplayNavigationState>
 
-    /** Human-readable provider name for diagnostics/UI ("Google Navigation SDK", "Simulator"). */
+    /** Human-readable provider name for diagnostics/UI ("HunterNav engine", "Simulator"). */
     val providerName: String
 
     /**

@@ -22,7 +22,6 @@ import com.hunternav.domain.navigation.NavigationEvent
 import com.hunternav.domain.model.SupportedRegion
 import com.hunternav.domain.repository.LocationProvider
 import com.hunternav.domain.repository.LocationSourceStatus
-import com.hunternav.ui.map.MapController
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -182,7 +181,7 @@ class AppViewModel(
         if (granted) startBrowseTracking()
     }
 
-    /** Called by screens once their MapLibre style has loaded. */
+    /** Called by screens once the map surface is ready. */
     fun onMapReady() {
         _mapReady.value = true
     }

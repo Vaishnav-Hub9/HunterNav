@@ -26,7 +26,6 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -35,21 +34,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.hunternav.ui.rememberAppViewModel
 import com.hunternav.BuildConfig
-import com.hunternav.data.offline.TelanganaOfflineMap
 import com.hunternav.di.AppContainer
 import com.hunternav.ui.AppViewModel
 import com.hunternav.ui.components.PillChip
-import com.hunternav.ui.components.PrimaryActionButton
 import com.hunternav.ui.theme.Cobalt
 import com.hunternav.ui.theme.InkSecondary
 import com.hunternav.ui.theme.Ivory
-import java.util.Locale
 
-/** Basic V1 settings: units, camera preference, map style placeholder, demo mode, attribution. */
+/** Basic V1 settings: units, camera preference, map style, demo mode, attribution. */
 @Composable
 fun SettingsScreen(
     container: AppContainer,
@@ -58,12 +53,11 @@ fun SettingsScreen(
     val viewModel: AppViewModel = rememberAppViewModel(container)
     val demoMode by viewModel.demoMode.collectAsState()
     // Names the active destination-search backend in the privacy/attribution cards below.
-    val geocoderLabel = if (container.geocodingProviderTag == "mappls") "Mappls" else "Nominatim"
-    // Map renderer label: Mappls when the SDK auth files were present at build time,
-    // otherwise the keyless MapLibre + OpenFreeMap fallback (CI / checkout builds).
-    val mapProviderLabel = if (BuildConfig.MAPPLS_ENABLED) "Mappls (mapmyindia.com)" else "OpenFreeMap (openfreemap.org)"
-    // Routing is Mappls-only; show the unconfigured state instead of pretending it is active.
-    val routingLabel = if (container.routingProviderTag == "mappls") "Mappls" else "Mappls (not configured)"
+    val geocoderLabel = if (container.geocodingProviderTag == "google") "Google" else "Google (not configured)"
+    // Map renderer: Google Maps — the only map engine since the Google-only migration.
+    val mapProviderLabel = "Google Maps (google.com)"
+    // Routing is Google-only; show the unconfigured state instead of pretending it is active.
+    val routingLabel = if (container.routingProviderTag == "google_routes") "Google Routes API" else "Google Routes API (not configured)"
 
     var units by remember { mutableStateOf("km") }
     var cameraPref by remember { mutableStateOf("Follow") }
@@ -115,11 +109,7 @@ fun SettingsScreen(
                 Text("Map style", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    if (BuildConfig.MAPPLS_ENABLED) {
-                        "Mappls vector map (mapmyindia.com) — automotive-grade India road data."
-                    } else {
-                        "OpenFreeMap · Liberty (bright daylight style). More styles coming."
-                    },
+                    "Google Maps — traffic-aware vector map with two-wheeler routing for India.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = InkSecondary,
                 )
@@ -150,82 +140,6 @@ fun SettingsScreen(
             }
 
             SettingsCard {
-                Text("Offline map (Hyderabad region)", style = MaterialTheme.typography.titleMedium)
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "Download the area you ride so the map keeps rendering without a data " +
-                        "connection. OSM data © OpenStreetMap contributors (ODbL), served via " +
-                        "OpenFreeMap; stored on this device only.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = InkSecondary,
-                )
-                Spacer(Modifier.height(8.dp))
-
-                val context = LocalContext.current
-                val offlineMap = remember(context) { TelanganaOfflineMap(context.applicationContext) }
-                val offlineState by offlineMap.state.collectAsState()
-                val installedPreset by offlineMap.installedPreset.collectAsState()
-                var selectedPreset by remember {
-                    mutableStateOf(installedPreset ?: TelanganaOfflineMap.Preset.HYDERABAD)
-                }
-                LaunchedEffect(Unit) { offlineMap.refresh() }
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TelanganaOfflineMap.Preset.entries.forEach { preset ->
-                        PillChip(
-                            "${preset.displayName} ${preset.sizeEstimate}",
-                            selectedPreset == preset,
-                            { selectedPreset = preset },
-                        )
-                    }
-                }
-                Spacer(Modifier.height(8.dp))
-
-                when (val state = offlineState) {
-                    is TelanganaOfflineMap.OfflineState.Checking ->
-                        Text("Checking offline maps…", style = MaterialTheme.typography.bodyMedium, color = InkSecondary)
-
-                    is TelanganaOfflineMap.OfflineState.Idle ->
-                        Text("Not downloaded yet. Estimates are for the zoom levels navigation needs.", style = MaterialTheme.typography.bodyMedium, color = InkSecondary)
-
-                    is TelanganaOfflineMap.OfflineState.Downloading ->
-                        Text(
-                            "Downloading… ${state.percent}% (${formatBytes(state.bytesDownloaded)})",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = Cobalt,
-                        )
-
-                    is TelanganaOfflineMap.OfflineState.Ready ->
-                        Text(
-                            "Ready — ${installedPreset?.displayName ?: "region"} offline (${formatBytes(state.bytesDownloaded)}).",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = Cobalt,
-                        )
-
-                    is TelanganaOfflineMap.OfflineState.Error ->
-                        Text(state.message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
-                }
-
-                Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    PrimaryActionButton(
-                        text = "Download",
-                        enabled = offlineState !is TelanganaOfflineMap.OfflineState.Downloading,
-                        onClick = { offlineMap.startDownload(selectedPreset) },
-                        modifier = Modifier.weight(1f),
-                    )
-                    PrimaryActionButton(
-                        text = "Delete",
-                        enabled = installedPreset != null && offlineState !is TelanganaOfflineMap.OfflineState.Downloading,
-                        onClick = { offlineMap.deletePack() },
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(12.dp))
-
-            SettingsCard {
                 Text("Privacy & services", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(6.dp))
                 Text(
@@ -248,17 +162,12 @@ fun SettingsScreen(
                 Text("About & attribution", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    (if (BuildConfig.MAPPLS_ENABLED) {
-                        "Map rendered by Mappls © CEINFO Systems (MapmyIndia)\n"
-                    } else {
-                        "Map data © OpenStreetMap contributors\nMap tiles © OpenFreeMap (openfreemap.org)\n"
-                    }) +
-                        "Routing by Mappls (mapmyindia.com) — two-wheeler profile, traffic-aware\n" +
-                        "Geocoding by $geocoderLabel " +
-                        (if (geocoderLabel == "Mappls") "(mappls.com)" else "(nominatim.openstreetmap.org)") +
-                        "\n\n" +
+                    "Map data © Google\n" +
+                        "Routing by Google Maps Platform — Routes API, two-wheeler mode, traffic-aware\n" +
+                        "Geocoding by $geocoderLabel (maps.googleapis.com)\n" +
+                        "\n" +
                         "HunterNav ${BuildConfig.VERSION_NAME} — open-source prototype.\n" +
-                        "Routing endpoint: ${BuildConfig.MAPPLS_ROUTING_BASE_URL} ($routingLabel)",
+                        "Routing endpoint: ${BuildConfig.GOOGLE_ROUTES_BASE_URL} ($routingLabel)",
                     style = MaterialTheme.typography.bodyMedium,
                     color = InkSecondary,
                     modifier = Modifier.clickable {
@@ -271,11 +180,6 @@ fun SettingsScreen(
     }
 }
 
-private fun formatBytes(bytes: Long): String = when {
-    bytes >= 1_000_000_000L -> String.format(Locale.US, "%.1f GB", bytes / 1_000_000_000.0)
-    bytes >= 1_000_000L -> String.format(Locale.US, "%.0f MB", bytes / 1_000_000.0)
-    else -> "$bytes B"
-}
 
 @Composable
 private fun SettingsCard(content: @Composable () -> Unit) {

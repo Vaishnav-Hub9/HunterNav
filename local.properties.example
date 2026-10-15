@@ -1,20 +1,20 @@
 # Copy to local.properties (already used by Gradle for sdk.dir) and adjust.
 # NEVER commit real secrets; this file is a template only.
 
-# REQUIRED — Mappls Console access token (docs/mappls.md). One token enables traffic-aware
-# two-wheeler routing (Direction API v1, resource route_traffic) AND Mappls place search +
-# reverse geocoding. Get it from the Mappls Console (Credentials → REST APIs) for the same
-# application whose .a.olf / .a.conf SDK auth files live in app/.
-# Without it, route calculation fails with a clear configuration error (no OSRM fallback).
-mappls.accessToken=
+# REQUIRED — Google Maps Platform API key (docs/google-maps.md). ONE key covers:
+#   - Maps SDK for Android (the phone map, via manifest meta-data),
+#   - Routes API v2 (traffic-aware TWO_WHEELER routing),
+#   - Geocoding API (destination search + reverse geocoding),
+#   - Map Tiles API (raster tiles for the handlebar display).
+# Enable all four APIs on your Google Cloud project and restrict the key to this app
+# (Android package com.hunternav + your signing certificate's SHA-1).
+# Without it, routing and search fail with a clear configuration error (no fallback engine)
+# and the map renders no tiles.
+google.maps.apiKey=
 
-# Optional overrides (defaults shown). Route profile: biking (two-wheeler) | driving | trucking.
-# mappls.routing.baseUrl=https://route.mappls.com/
-# mappls.search.baseUrl=https://search.mappls.com/
-# mappls.routing.profile=biking
-
-# Destination search when NO Mappls token is configured (public Nominatim, low-volume use).
-geocoder.baseUrl=https://nominatim.openstreetmap.org/
+# Optional endpoint overrides (defaults shown).
+# google.routes.baseUrl=https://routes.googleapis.com
+# google.geocoding.baseUrl=https://maps.googleapis.com
 
 # Default camera (Hyderabad)
 default.latitude=17.3850
@@ -25,12 +25,10 @@ default.zoom=12.5
 # the simulator; leave unset/false for normal builds)
 demo.enabled=false
 
-# Optional Google Maps key for the display pipeline's Google Navigation SDK path
-# (see docs/display-pipeline.md). Empty = the display uses HunterNav's own engine.
-google.maps.apiKey=
-
-# Handlebar display pipeline: WebSocket endpoint of the ESP32 display
-# (192.168.4.1 is the ESP32 soft-AP default) and a dev switch that forces the offline
-# simulator as the display navigation source regardless of API key.
+# Handlebar display pipeline (see docs/display-pipeline.md): WebSocket endpoint of the ESP32
+# display (192.168.4.1 is the ESP32 soft-AP default), a dev switch that forces the offline
+# simulator as the display navigation source, and the panel resolution.
 display.wsUrl=ws://192.168.4.1:81/display
 display.simulator=false
+display.width=240
+display.height=240

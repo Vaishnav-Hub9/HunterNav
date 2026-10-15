@@ -24,10 +24,10 @@
 │   RoutingProvider · GeocodingProvider · LocationProvider   │
 ├────────────────────────────────────────────────────────────┤
 │ Data                                                        │
-│   OsrmRoutingProvider (+ DTOs/mappers)                     │
-│   NominatimGeocodingProvider                               │
+│   GoogleRoutesProvider (+ DTOs/mappers)                    │
+│   GoogleGeocodingProvider                                  │
 │   AndroidLocationProvider (Fused) · FakeLocationProvider   │
-│   MapController / NavigationCameraController (MapLibre)    │
+│   GoogleMapsSurface / NavigationCameraController (Maps SDK)│
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -35,7 +35,7 @@ Rules enforced in code:
 
 - **No business logic in composables.** Screens render state and forward events.
 - **No giant MainActivity** — it only wires the NavHost.
-- **UI never sees OSRM JSON.** DTOs live in `data/routing/`; maneuvers are normalized to
+- **UI never sees provider JSON.** DTOs live in `data/routing/`; maneuvers are normalized to
   `ManeuverType` before crossing into the domain.
 - **Routing and geocoding are swappable** behind interfaces (see README "Switching routing
   providers").
@@ -57,15 +57,16 @@ is a one-line change there.
 ## Configuration
 
 `BuildConfig` fields are generated in `app/build.gradle.kts` with defaults, overridable via
-`local.properties` (gitignored): `OSRM_BASE_URL`, `GEOCODER_BASE_URL`, `MAP_STYLE_URL`,
-`DEFAULT_LATITUDE/LONGITUDE/ZOOM` (Hyderabad), `DEMO_MODE_ENABLED`. Business logic never
-hardcodes endpoints.
+`local.properties` (gitignored): `GOOGLE_MAPS_API_KEY`, `GOOGLE_ROUTES_BASE_URL`,
+`GOOGLE_GEOCODING_BASE_URL`, `DEFAULT_LATITUDE/LONGITUDE/ZOOM` (Hyderabad),
+`DEMO_MODE_ENABLED`, `DISPLAY_WS_URL`, `DISPLAY_SIMULATOR`, `DISPLAY_WIDTH/HEIGHT`.
+Business logic never hardcodes endpoints. See [google-maps.md](google-maps.md).
 
 ## Map rendering
 
-`ui/map/MapController` wraps MapLibre: style loading, route line (bright cobalt with white
-casing), traveled/remaining split, destination pin, camera modes. `HunterNavMapView` embeds
-`MapView` into Compose and forwards lifecycle events. `NavigationCameraController` +
+`ui/map/GoogleMapsSurface` wraps the Google Maps SDK: map ready callback, route line (bright
+cobalt), traveled/remaining split, destination pin, camera modes. `GoogleMapView` embeds the
+SDK `MapView` into Compose and forwards lifecycle events. `NavigationCameraController` +
 `NavigationZoomPolicy` centralize dynamic zoom — thresholds live in one place, not in UI
 components.
 

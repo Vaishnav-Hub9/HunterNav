@@ -266,8 +266,8 @@ class NavigationEngine(
         val radius = config.arrivalRadiusMeters + location.accuracy.coerceAtMost(30f).toDouble()
         val distance = distanceMeters(location.latitude, location.longitude, dest.latitude, dest.longitude)
         // Primary target: the destination the user selected (spec: arrival is checked against
-        // the actual selected destination). Secondary: the active route's own endpoint — OSRM
-        // snaps the destination onto the routable road network (real captures show 8–47 m
+        // the actual selected destination). Secondary: the active route's own endpoint — the
+        // router snaps the destination onto the routable road network (real captures show 8–47 m
         // offsets), and reaching that endpoint completes the trip this route was built for.
         val reachedDestination = distance <= radius
         val reachedRouteEnd = route.geometry.lastOrNull()?.let {
@@ -439,7 +439,7 @@ class NavigationEngine(
     private fun buildStepEndIndices(route: Route): List<Int> {
         // Boundary vertices: one per step, at the geometry vertex nearest the step's maneuver
         // location. Step i spans [boundary(i), boundary(i+1)) — i.e. each boundary is the START
-        // of its step (OSRM maneuvers fire at the beginning of a step), and the last step ends
+        // of its step (provider maneuvers fire at the beginning of a step), and the last step ends
         // at the geometry's final vertex.
         val steps = allSteps(route)
         if (steps.isEmpty() || route.geometry.isEmpty()) return emptyList()

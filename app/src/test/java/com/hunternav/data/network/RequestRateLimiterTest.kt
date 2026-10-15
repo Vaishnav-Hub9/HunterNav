@@ -7,7 +7,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The public Nominatim/OSRM demo services allow at most ~1 request/second; the limiter is
+ * The app's conservative policy is at most ~1 request/second across providers; the limiter is
  * the single enforcement point for that policy (spec §5/§6).
  */
 class RequestRateLimiterTest {

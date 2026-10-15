@@ -41,7 +41,7 @@ class NetworkClient(routing: Boolean = false) : HttpTransport {
     }
 
     companion object {
-        /** Standard User-Agent identifying the app (Nominatim usage policy requires one). */
+        /** Standard User-Agent identifying the app on REST calls. */
         const val USER_AGENT = "HunterNav/0.1 (open-source prototype)"
     }
 }

@@ -1,7 +1,7 @@
 package com.hunternav.domain.model
 
 /**
- * Normalized maneuver types. Providers (OSRM, GraphHopper, ...) are mapped into this enum by
+ * Normalized maneuver types. Providers (Google Routes API, ...) are mapped into this enum by
  * their respective data layers; the UI never sees raw provider structures.
  */
 enum class ManeuverType {

@@ -28,7 +28,7 @@ data class Route(
     }
 }
 
-/** A leg of a route (OSRM returns one leg per waypoint pair). */
+/** A leg of a route (one leg per origin/destination waypoint pair). */
 data class RouteLeg(
     val distanceMeters: Double,
     val durationSeconds: Double,

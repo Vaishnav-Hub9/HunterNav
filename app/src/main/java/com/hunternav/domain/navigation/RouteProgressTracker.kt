@@ -99,7 +99,7 @@ class RouteProgressTracker {
 
         // Remaining duration model (documented assumption): the current step's duration is
         // scaled by the fraction of that step still to travel, plus the full duration of every
-        // later step — so duration decreases continuously with progress, matches OSRM's
+        // later step — so duration decreases continuously with progress, matches the provider's
         // per-step speeds, and is recomputed from scratch after a reroute. When step boundaries
         // are unavailable we fall back to a uniform-speed proportional estimate over the route.
         val remainingDuration = if (steps.isNotEmpty()) {
