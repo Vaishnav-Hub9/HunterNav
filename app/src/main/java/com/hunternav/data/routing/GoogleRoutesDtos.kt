@@ -39,12 +39,12 @@ data class GoogleLegDto(
 @Serializable
 data class GoogleStepDto(
     @SerialName("distanceMeters") val distanceMeters: Long? = null,
-    val duration: String? = null,
+    /** Steps carry `staticDuration` in the documented schema — there is no step-level `duration`. */
+    @SerialName("staticDuration") val staticDuration: String? = null,
     val polyline: GooglePolylineDto? = null,
     val startLocation: GoogleLatLngContainerDto? = null,
     val endLocation: GoogleLatLngContainerDto? = null,
     val navigationInstruction: GoogleNavigationInstructionDto? = null,
-    val staticInstruction: GoogleStaticInstructionDto? = null,
 )
 
 @Serializable
@@ -62,11 +62,6 @@ data class GoogleLatLngDto(
 data class GoogleNavigationInstructionDto(
     /** Maneuver enum name, e.g. "TURN_LEFT" — absent on the final arrival step. */
     val maneuver: String? = null,
+    /** Spoken-style instruction, e.g. "Turn right onto MG Road". */
     val instructions: String? = null,
-)
-
-@Serializable
-data class GoogleStaticInstructionDto(
-    val maneuver: String? = null,
-    val instruction: String? = null,
 )

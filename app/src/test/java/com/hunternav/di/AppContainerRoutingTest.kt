@@ -11,18 +11,19 @@ import org.junit.Test
 
 /**
  * Guards the Google-only migration decision: HunterNav has NO fallback routing engine.
- * When `google.maps.apiKey` is unset (always the case in unit-test builds — the key is
- * never committed), the container must surface a clear configuration error instead of
- * silently routing through another engine whose free-flow numbers produced wrong
- * distance/ETA on the road.
+ * When `google.maps.apiKey` is unset, the container must surface a clear configuration
+ * error instead of silently routing through another engine whose free-flow numbers
+ * produced wrong distance/ETA on the road. The key is injected explicitly (blank) so this
+ * branch is exercised deterministically — including on developer machines whose
+ * local.properties carries a real key, which would make BuildConfig non-blank.
  */
 class AppContainerRoutingTest {
 
     @Test
     fun `missing key yields clear configuration error, not another provider`() = runTest {
-        val container = AppContainer(ContextWrapper(null))
+        val container = AppContainer(ContextWrapper(null), googleMapsApiKey = "")
         assertEquals(
-            "test builds never carry a key",
+            "blank key must select the unconfigured provider",
             "google_routes-unconfigured",
             container.routingProviderTag,
         )
@@ -43,7 +44,7 @@ class AppContainerRoutingTest {
 
     @Test
     fun `missing key also fails geocoding loudly`() = runTest {
-        val container = AppContainer(ContextWrapper(null))
+        val container = AppContainer(ContextWrapper(null), googleMapsApiKey = "")
         assertEquals("google-unconfigured", container.geocodingProviderTag)
 
         val result = container.geocodingProvider.search("charminar", near = null)

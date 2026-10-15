@@ -15,6 +15,19 @@ import com.hunternav.domain.model.RouteStep
 object GoogleRoutesMappers {
 
     /**
+     * Pulls the road name out of a navigation instruction ("Turn right onto MG Road" →
+     * "MG Road", "Head north on MG Road" → "MG Road"). Null when the text carries no
+     * road segment — better no name than a wrong one.
+     */
+    fun roadNameFrom(instructions: String?): String? =
+        (instructions?.split(" onto ")?.getOrNull(1)
+            ?: instructions?.split(" on ")?.getOrNull(1)
+            ?: instructions?.split(" to ")?.getOrNull(1))
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+
+
+    /**
      * Maps the documented Routes API v2 `Maneuver` enum names into domain maneuver types.
      * Unknown values degrade to [ManeuverType.CONTINUE] — an unmapped maneuver must never
      * crash navigation; it is simply announced as "continue".
@@ -94,7 +107,6 @@ object GoogleRoutesMappers {
                 steps = leg.steps.mapIndexed { stepIndex, step ->
                     val start = step.startLocation?.location
                     val maneuver = step.navigationInstruction?.maneuver
-                        ?: step.staticInstruction?.maneuver
                     // The final step of a leg is the arrival step; Google omits
                     // navigationInstruction there, so the last step is always ARRIVE.
                     val type = if (stepIndex == leg.steps.lastIndex && maneuver.isNullOrBlank()) {
@@ -110,10 +122,10 @@ object GoogleRoutesMappers {
                         coordinate = location,
                         maneuver = Maneuver(type = type, location = location),
                         distanceMeters = step.distanceMeters?.toDouble() ?: 0.0,
-                        durationSeconds = toDurationSeconds(step.duration),
-                        roadName = step.staticInstruction?.instruction
-                            ?.split(" on ")?.getOrNull(1)
-                            ?.takeIf { it.isNotBlank() },
+                        // Steps expose staticDuration (no traffic) — the traffic-adjusted
+                        // numbers live at route/leg level.
+                        durationSeconds = toDurationSeconds(step.staticDuration),
+                        roadName = roadNameFrom(step.navigationInstruction?.instructions),
                         geometry = decodePolyline(step.polyline?.encodedPolyline),
                     )
                 },

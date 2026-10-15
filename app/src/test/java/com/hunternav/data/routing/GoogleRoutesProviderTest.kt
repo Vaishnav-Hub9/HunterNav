@@ -13,6 +13,7 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -111,6 +112,33 @@ class GoogleRoutesProviderTest {
     }
 
     @Test
+    fun `field mask uses only schema-valid RouteLegStep paths`() {
+        val mask = GoogleRoutesProvider.FIELD_MASK
+        val paths = mask.split(",")
+        // Every path must be spelled exactly as in the documented computeRoutes schema.
+        val valid = setOf(
+            "routes.distanceMeters",
+            "routes.duration",
+            "routes.polyline",
+            "routes.legs.distanceMeters",
+            "routes.legs.duration",
+            "routes.legs.steps.distanceMeters",
+            "routes.legs.steps.staticDuration",
+            "routes.legs.steps.polyline",
+            "routes.legs.steps.startLocation",
+            "routes.legs.steps.endLocation",
+            "routes.legs.steps.navigationInstruction",
+        )
+        val invalid = paths.filter { it !in valid }
+        assertTrue("mask contains schema-invalid paths: $invalid", invalid.isEmpty())
+        // Regression: the pre-Oct-2026 mask carried these two non-existent paths and every
+        // live request failed with HTTP 400 INVALID_ARGUMENT (fieldViolation named the mask).
+        assertFalse("step-level duration must not be requested", paths.contains("routes.legs.steps.duration"))
+        assertFalse("staticInstruction does not exist in the schema", paths.contains("routes.legs.steps.staticInstruction"))
+        assertTrue("mapper needs step durations", paths.contains("routes.legs.steps.staticDuration"))
+    }
+
+    @Test
     fun `empty routes array is a no-route failure, never sample data`() = runTest {
         val transport = FakeTransport().apply { enqueue(200, """{"routes":[]}""") }
         val result = provider(transport).getRoutes(origin, destination)
@@ -125,7 +153,7 @@ class GoogleRoutesProviderTest {
                 200,
                 """
                 {"routes":[{"distanceMeters":1500,"duration":"300s","legs":[
-                  {"steps":[{"distanceMeters":1500,"duration":"300s"}]}]}]}
+                  {"steps":[                  {"distanceMeters":1500,"staticDuration":"300s"}]}]}]}
                 """.trimIndent(),
             )
         }
@@ -184,7 +212,10 @@ class GoogleRoutesProviderTest {
     companion object {
         /**
          * Documented computeRoutes success shape (fields limited to the provider's mask):
-         * overview + step polylines are real encoded polylines around Hyderabad.
+         * overview + step polylines are real encoded polylines around Hyderabad. Steps carry
+         * `staticDuration` and `navigationInstruction` — the spelled-per-schema shape the
+         * live API returns (the pre-Oct-2026 fixture's `duration`/`staticInstruction` did
+         * not exist and made the real field mask fail with HTTP 400).
          */
         const val SUCCESS_FIXTURE = """
             {"routes":[{
@@ -195,16 +226,15 @@ class GoogleRoutesProviderTest {
                 "distanceMeters":1500,
                 "duration":"300s",
                 "steps":[
-                  {"distanceMeters":900,"duration":"180s",
+                  {"distanceMeters":900,"staticDuration":"180s",
                    "polyline":{"encodedPolyline":"_p~iF~ps|U"},
                    "startLocation":{"location":{"latitude":17.385,"longitude":78.4867}},
-                   "navigationInstruction":{"maneuver":"DEPART","instructions":"Head north on MG Road"},
-                   "staticInstruction":{"instruction":"Head north on MG Road"}},
-                  {"distanceMeters":600,"duration":"120s",
+                   "endLocation":{"location":{"latitude":17.390,"longitude":78.4870}},
+                   "navigationInstruction":{"maneuver":"DEPART","instructions":"Head north on MG Road"}},
+                  {"distanceMeters":600,"staticDuration":"120s",
                    "polyline":{"encodedPolyline":"_ulLnnqC"},
                    "startLocation":{"location":{"latitude":17.390,"longitude":78.4870}},
-                   "endLocation":{"location":{"latitude":17.3616,"longitude":78.4744}},
-                   "staticInstruction":{"instruction":"You have arrived at your destination"}}
+                   "endLocation":{"location":{"latitude":17.3616,"longitude":78.4744}}}
                 ]}]}]}
         """
     }

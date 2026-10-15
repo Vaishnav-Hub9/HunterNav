@@ -46,6 +46,9 @@ class AppContainer(
     engineScopeOverride: CoroutineScope? = null,
     engineNowMsOverride: (() -> Long)? = null,
     destinationHistoryOverride: DestinationHistory? = null,
+    /** Injectable so tests can exercise the unconfigured branch even on machines whose
+     *  local.properties carries a real key (BuildConfig would otherwise be non-blank). */
+    private val googleMapsApiKey: String = BuildConfig.GOOGLE_MAPS_API_KEY,
 ) {
 
     private val appContext: android.content.Context = context.applicationContext ?: context
@@ -85,11 +88,11 @@ class AppContainer(
      * Maps key the app surfaces a clear configuration error through the normal error path
      * instead of silently routing with a different engine's free-flow numbers.
      */
-    val routingProvider: RoutingProvider = routingProviderOverride ?: if (BuildConfig.GOOGLE_MAPS_API_KEY.isNotBlank()) {
+    val routingProvider: RoutingProvider = routingProviderOverride ?: if (googleMapsApiKey.isNotBlank()) {
         DebugLog.d("ROUTING_PROVIDER", "selected=google_routes (google.maps.apiKey configured)")
         GoogleRoutesProvider(
             baseUrl = BuildConfig.GOOGLE_ROUTES_BASE_URL,
-            apiKey = BuildConfig.GOOGLE_MAPS_API_KEY,
+            apiKey = googleMapsApiKey,
             networkClient = routingNetworkClient,
         )
     } else {
@@ -106,11 +109,11 @@ class AppContainer(
      * (docs/google-maps.md). [geocodingProviderTag] names the active one for diagnostics
      * and in-app attribution.
      */
-    val geocodingProvider: GeocodingProvider = geocodingProviderOverride ?: if (BuildConfig.GOOGLE_MAPS_API_KEY.isNotBlank()) {
+    val geocodingProvider: GeocodingProvider = geocodingProviderOverride ?: if (googleMapsApiKey.isNotBlank()) {
         DebugLog.d("GEOCODING_PROVIDER", "selected=google (google.maps.apiKey configured)")
         GoogleGeocodingProvider(
             baseUrl = BuildConfig.GOOGLE_GEOCODING_BASE_URL,
-            apiKey = BuildConfig.GOOGLE_MAPS_API_KEY,
+            apiKey = googleMapsApiKey,
             networkClient = networkClient,
         )
     } else {

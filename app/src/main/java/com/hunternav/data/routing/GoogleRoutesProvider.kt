@@ -268,7 +268,8 @@ class GoogleRoutesProvider(
             dto.legs.any { leg -> leg.steps.isNotEmpty() }
     }
 
-    private companion object {
+    /** Internal (not private) so the mask-regression test can pin the exact paths sent. */
+    internal companion object {
         /** Conservative app-wide policy: at most one routing request per second. */
         const val MIN_REQUEST_INTERVAL_MS = 1_000L
         /** 1 initial attempt + 2 bounded retries. */
@@ -282,10 +283,15 @@ class GoogleRoutesProvider(
          * Requested response fields — only what the mapper consumes, keeping responses small
          * (Google bills per returned field beyond this mask).
          */
+        // Exactly the paths the mapper consumes, spelled per the documented RouteLegStep
+        // schema: a step carries `staticDuration` (there is NO step-level `duration`) and
+        // `navigationInstruction` (there is NO `staticInstruction`). ANY invalid path here
+        // makes the whole request fail with HTTP 400 INVALID_ARGUMENT — the fieldViolation
+        // names the mask itself (verified against a live response, Oct 2026).
         const val FIELD_MASK = "routes.distanceMeters,routes.duration,routes.polyline," +
             "routes.legs.distanceMeters,routes.legs.duration," +
-            "routes.legs.steps.distanceMeters,routes.legs.steps.duration,routes.legs.steps.polyline," +
+            "routes.legs.steps.distanceMeters,routes.legs.steps.staticDuration,routes.legs.steps.polyline," +
             "routes.legs.steps.startLocation,routes.legs.steps.endLocation," +
-            "routes.legs.steps.navigationInstruction,routes.legs.steps.staticInstruction"
+            "routes.legs.steps.navigationInstruction"
     }
 }
