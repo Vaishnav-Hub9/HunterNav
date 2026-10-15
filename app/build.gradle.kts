@@ -46,8 +46,19 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // Development endpoints and defaults. Override via local.properties (local.properties.example).
-        buildConfigField("String", "OSRM_BASE_URL", "\"${localProps.getProperty("osrm.baseUrl", "https://router.project-osrm.org/")}\"")
+        // Routing is Mappls-only — there is NO OSRM/other-provider fallback: without
+        // mappls.accessToken route calculation fails loudly with setup instructions.
         buildConfigField("String", "GEOCODER_BASE_URL", "\"${localProps.getProperty("geocoder.baseUrl", "https://nominatim.openstreetmap.org/")}\"")
+        // Mappls REST APIs (see docs/mappls.md). One Console access token covers routing and
+        // destination search: set mappls.accessToken in local.properties (never committed —
+        // Mappls Console credentials are personal). Left EMPTY (only for keyless CI builds),
+        // routing reports a clear configuration error and search stays on Nominatim.
+        buildConfigField("String", "MAPPLS_ACCESS_TOKEN", "\"" + localProps.getProperty("mappls.accessToken", "") + "\"")
+        buildConfigField("String", "MAPPLS_SEARCH_BASE_URL", "\"${localProps.getProperty("mappls.search.baseUrl", "https://search.mappls.com/")}\"")
+        buildConfigField("String", "MAPPLS_ROUTING_BASE_URL", "\"${localProps.getProperty("mappls.routing.baseUrl", "https://route.mappls.com/")}\"")
+        // Two-wheeler routing by default — the profile HunterNav is built for (documented
+        // values: driving | biking | walking | trucking).
+        buildConfigField("String", "MAPPLS_ROUTING_PROFILE", "\"${localProps.getProperty("mappls.routing.profile", "biking")}\"")
         buildConfigField("String", "MAP_STYLE_URL", "\"${localProps.getProperty("map.styleUrl", "https://tiles.openfreemap.org/styles/liberty")}\"")
         buildConfigField("double", "DEFAULT_LATITUDE", localProps.getProperty("default.latitude", "17.3850"))
         buildConfigField("double", "DEFAULT_LONGITUDE", localProps.getProperty("default.longitude", "78.4867"))

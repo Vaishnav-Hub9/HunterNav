@@ -54,7 +54,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 /**
- * Destination search (spec §5 — public Nominatim usage policy):
+ * Destination search (spec §5 — geocoder usage policy; Nominatim by default, Mappls when a
+ * search token is configured, see docs/mappls.md):
  *  - queries fire ONLY on deliberate submission (IME Search action or the trailing button) —
  *    no type-ahead/autocomplete requests while typing,
  *  - the previous in-flight request is cancelled so a slow old response can never overwrite

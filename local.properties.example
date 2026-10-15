@@ -1,14 +1,20 @@
 # Copy to local.properties (already used by Gradle for sdk.dir) and adjust.
-# NEVER commit real secrets; endpoints here are public development endpoints.
+# NEVER commit real secrets; this file is a template only.
 
-# OSRM routing endpoint (development default = public demo server, NOT for production volume)
-osrm.baseUrl=https://router.project-osrm.org/
+# REQUIRED — Mappls Console access token (docs/mappls.md). One token enables traffic-aware
+# two-wheeler routing (Direction API v1, resource route_traffic) AND Mappls place search +
+# reverse geocoding. Get it from the Mappls Console (Credentials → REST APIs) for the same
+# application whose .a.olf / .a.conf SDK auth files live in app/.
+# Without it, route calculation fails with a clear configuration error (no OSRM fallback).
+mappls.accessToken=
 
-# Geocoder endpoint (Nominatim, low-volume development use)
+# Optional overrides (defaults shown). Route profile: biking (two-wheeler) | driving | trucking.
+# mappls.routing.baseUrl=https://route.mappls.com/
+# mappls.search.baseUrl=https://search.mappls.com/
+# mappls.routing.profile=biking
+
+# Destination search when NO Mappls token is configured (public Nominatim, low-volume use).
 geocoder.baseUrl=https://nominatim.openstreetmap.org/
-
-# Map style (OpenFreeMap Liberty — bright, no API key)
-map.styleUrl=https://tiles.openfreemap.org/styles/liberty
 
 # Default camera (Hyderabad)
 default.latitude=17.3850
@@ -19,8 +25,8 @@ default.zoom=12.5
 # the simulator; leave unset/false for normal builds)
 demo.enabled=false
 
-# Google Maps key for the Navigation SDK + Map Tiles API (display pipeline). Empty = the
-# display falls back to HunterNav's own OSRM engine (no paid API required).
+# Optional Google Maps key for the display pipeline's Google Navigation SDK path
+# (see docs/display-pipeline.md). Empty = the display uses HunterNav's own engine.
 google.maps.apiKey=
 
 # Handlebar display pipeline: WebSocket endpoint of the ESP32 display

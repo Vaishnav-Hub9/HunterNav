@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import com.hunternav.BuildConfig
 import com.hunternav.core.util.DebugLog
+import com.hunternav.data.geocoding.MapplsGeocodingProvider
 import com.hunternav.data.geocoding.NominatimGeocodingProvider
 import com.hunternav.data.location.AndroidLocationProvider
 import com.hunternav.data.location.FakeLocationProvider
@@ -11,7 +12,8 @@ import com.hunternav.data.network.NetworkClient
 import com.hunternav.data.recent.InMemoryPreferenceBackend
 import com.hunternav.data.recent.RecentDestinationsStore
 import com.hunternav.data.recent.SharedPreferencesBackend
-import com.hunternav.data.routing.OsrmRoutingProvider
+import com.hunternav.core.result.AppResult
+import com.hunternav.data.routing.MapplsRoutingProvider
 import com.hunternav.display.DisplayPipeline
 import com.hunternav.display.nav.EngineNavigationDataProvider
 import com.hunternav.display.nav.GoogleNavigationAdapter
@@ -20,6 +22,7 @@ import com.hunternav.display.nav.SimulatedNavigationDataProvider
 import com.hunternav.display.transport.DisplayTransport
 import com.hunternav.display.transport.WebSocketDisplayTransport
 import com.hunternav.domain.model.Coordinate
+import com.hunternav.domain.model.Route
 import com.hunternav.domain.navigation.NavigationEngine
 import com.hunternav.domain.navigation.NavigationEngineConfig
 import com.hunternav.domain.repository.DestinationHistory
@@ -79,15 +82,53 @@ class AppContainer(
     /** Tighter timeouts for routing (spec P2): hung reroutes must fail fast and retry. */
     private val routingNetworkClient = NetworkClient(routing = true)
 
-    val routingProvider: RoutingProvider = routingProviderOverride ?: OsrmRoutingProvider(
-        baseUrl = BuildConfig.OSRM_BASE_URL,
-        networkClient = routingNetworkClient,
-    )
+    /**
+     * Routing is Mappls-only (MapmyIndia Direction API v1, traffic-aware `route_traffic` with the
+     * two-wheeler profile — see docs/mappls.md). There is deliberately NO OSRM/other-provider
+     * fallback: without a Console token the app surfaces a clear configuration error through the
+     * normal error path instead of silently routing with a different engine's free-flow numbers.
+     */
+    val routingProvider: RoutingProvider = routingProviderOverride ?: if (BuildConfig.MAPPLS_ACCESS_TOKEN.isNotBlank()) {
+        DebugLog.d("ROUTING_PROVIDER", "selected=mappls (accessToken configured)")
+        MapplsRoutingProvider(
+            baseUrl = BuildConfig.MAPPLS_ROUTING_BASE_URL,
+            accessToken = BuildConfig.MAPPLS_ACCESS_TOKEN,
+            profile = BuildConfig.MAPPLS_ROUTING_PROFILE,
+            networkClient = routingNetworkClient,
+        )
+    } else {
+        DebugLog.d("ROUTING_PROVIDER", "selected=mappls (UNCONFIGURED: mappls.accessToken missing)")
+        UnconfiguredRoutingProvider
+    }
 
-    val geocodingProvider: GeocodingProvider = geocodingProviderOverride ?: NominatimGeocodingProvider(
-        baseUrl = BuildConfig.GEOCODER_BASE_URL,
-        networkClient = networkClient,
-    )
+    /** Diagnostic/attribution name of the active routing engine ("mappls" or "mappls-unconfigured"). */
+    val routingProviderTag: String =
+        if (routingProvider is MapplsRoutingProvider) "mappls" else "mappls-unconfigured"
+
+    /**
+     * Destination search + reverse geocoding. Nominatim stays the default (open, no key);
+     * one Mappls Console access token (mappls.accessToken) switches search + reverse-geocode
+     * to the official Mappls REST APIs (docs/mappls.md). [geocodingProviderTag]
+     * names the active one for diagnostics and in-app attribution.
+     */
+    val geocodingProvider: GeocodingProvider = geocodingProviderOverride ?: if (BuildConfig.MAPPLS_ACCESS_TOKEN.isNotBlank()) {
+        DebugLog.d("GEOCODING_PROVIDER", "selected=mappls (access token configured)")
+        MapplsGeocodingProvider(
+            baseUrl = BuildConfig.MAPPLS_SEARCH_BASE_URL,
+            accessToken = BuildConfig.MAPPLS_ACCESS_TOKEN,
+            networkClient = networkClient,
+        )
+    } else {
+        DebugLog.d("GEOCODING_PROVIDER", "selected=nominatim (default; no Mappls token)")
+        NominatimGeocodingProvider(
+            baseUrl = BuildConfig.GEOCODER_BASE_URL,
+            networkClient = networkClient,
+        )
+    }
+
+    /** Diagnostic/attribution name of the active geocoder ("nominatim" or "mappls"). */
+    val geocodingProviderTag: String =
+        if (geocodingProvider is MapplsGeocodingProvider) "mappls" else "nominatim"
 
     val realLocationProvider: LocationProvider = AndroidLocationProvider(context)
 
@@ -130,7 +171,7 @@ class AppContainer(
     /**
      * Navigation data source for the display, in order of preference:
      *  1. Google Navigation SDK — when a Google Maps key is configured;
-     *  2. HunterNav's own OSRM engine — the open-source stack, works with no paid API;
+     *  2. HunterNav's own engine — the same Mappls-backed routing the phone UI uses;
      *  3. Simulator — dev builds without any backend (display can be exercised offline).
      */
     val displayProvider: NavigationDataProvider = when {
@@ -146,7 +187,7 @@ class AppContainer(
             )
         }
         else -> {
-            DebugLog.d("DISPLAY_PROVIDER", "selected=osrm_engine (no Google key, simulator off)")
+            DebugLog.d("DISPLAY_PROVIDER", "selected=hunternav_engine (no Google key, simulator off)")
             EngineNavigationDataProvider(
                 routingProvider = routingProvider,
                 locationProvider = realLocationProvider,
@@ -166,7 +207,25 @@ class AppContainer(
                 width = BuildConfig.DISPLAY_WIDTH,
                 height = BuildConfig.DISPLAY_HEIGHT,
             ),
-            scope = appScope,
-        )
-    }
+        scope = appScope,
+    )
+}
+
+/**
+ * Stands in for [MapplsRoutingProvider] when `mappls.accessToken` is not set. Returns the setup
+ * error through the standard [AppResult] path so route preview/navigation show a clear message —
+ * it never contacts any routing server. Missing auth must fail loudly, never silently switch
+ * providers (different engines give different distance/ETA numbers).
+ */
+private object UnconfiguredRoutingProvider : RoutingProvider {
+    override suspend fun getRoutes(
+        origin: Coordinate,
+        destination: Coordinate,
+        alternatives: Boolean,
+    ): AppResult<List<Route>> = AppResult.Failure(
+        kind = com.hunternav.core.result.AppErrorKind.UNKNOWN,
+        message = "Mappls routing is not configured. Add mappls.accessToken=<your Console token> " +
+            "to local.properties and rebuild (see docs/mappls.md).",
+    )
+}
 }

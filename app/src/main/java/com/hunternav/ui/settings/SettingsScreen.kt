@@ -57,6 +57,13 @@ fun SettingsScreen(
 ) {
     val viewModel: AppViewModel = rememberAppViewModel(container)
     val demoMode by viewModel.demoMode.collectAsState()
+    // Names the active destination-search backend in the privacy/attribution cards below.
+    val geocoderLabel = if (container.geocodingProviderTag == "mappls") "Mappls" else "Nominatim"
+    // Map renderer label: Mappls when the SDK auth files were present at build time,
+    // otherwise the keyless MapLibre + OpenFreeMap fallback (CI / checkout builds).
+    val mapProviderLabel = if (BuildConfig.MAPPLS_ENABLED) "Mappls (mapmyindia.com)" else "OpenFreeMap (openfreemap.org)"
+    // Routing is Mappls-only; show the unconfigured state instead of pretending it is active.
+    val routingLabel = if (container.routingProviderTag == "mappls") "Mappls" else "Mappls (not configured)"
 
     var units by remember { mutableStateOf("km") }
     var cameraPref by remember { mutableStateOf("Follow") }
@@ -108,7 +115,11 @@ fun SettingsScreen(
                 Text("Map style", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "OpenFreeMap · Liberty (bright daylight style). More styles coming.",
+                    if (BuildConfig.MAPPLS_ENABLED) {
+                        "Mappls vector map (mapmyindia.com) — automotive-grade India road data."
+                    } else {
+                        "OpenFreeMap · Liberty (bright daylight style). More styles coming."
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     color = InkSecondary,
                 )
@@ -219,9 +230,10 @@ fun SettingsScreen(
                 Spacer(Modifier.height(6.dp))
                 Text(
                     "No accounts, no analytics, no crash reporting.\n\n" +
-                        "• Map tiles (OpenFreeMap) see which map areas are displayed.\n" +
-                        "• Place search (Nominatim) sees your search text — never your GPS location.\n" +
-                        "• Routing (OSRM) receives your origin and destination coordinates.\n" +
+                        "• Map rendering ($mapProviderLabel) sees which map areas are displayed.\n" +
+                        "• Place search ($geocoderLabel) sees your search text — never your GPS location.\n" +
+                        "• Routing ($routingLabel) receives your origin and destination coordinates, " +
+                        "and your current position while rerouting.\n" +
                         "• Your location stays on this device; precise-location diagnostics are " +
                         "written only to Logcat in debug builds.\n\n" +
                         "These third-party services can see these requests — they are not hidden.",
@@ -236,12 +248,17 @@ fun SettingsScreen(
                 Text("About & attribution", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "Map data © OpenStreetMap contributors\n" +
-                        "Map tiles © OpenFreeMap (openfreemap.org)\n" +
-                        "Routing by OSRM (project-osrm.org)\n" +
-                        "Geocoding by Nominatim (nominatim.openstreetmap.org)\n\n" +
+                    (if (BuildConfig.MAPPLS_ENABLED) {
+                        "Map rendered by Mappls © CEINFO Systems (MapmyIndia)\n"
+                    } else {
+                        "Map data © OpenStreetMap contributors\nMap tiles © OpenFreeMap (openfreemap.org)\n"
+                    }) +
+                        "Routing by Mappls (mapmyindia.com) — two-wheeler profile, traffic-aware\n" +
+                        "Geocoding by $geocoderLabel " +
+                        (if (geocoderLabel == "Mappls") "(mappls.com)" else "(nominatim.openstreetmap.org)") +
+                        "\n\n" +
                         "HunterNav ${BuildConfig.VERSION_NAME} — open-source prototype.\n" +
-                        "Routing endpoint: ${BuildConfig.OSRM_BASE_URL}",
+                        "Routing endpoint: ${BuildConfig.MAPPLS_ROUTING_BASE_URL} ($routingLabel)",
                     style = MaterialTheme.typography.bodyMedium,
                     color = InkSecondary,
                     modifier = Modifier.clickable {

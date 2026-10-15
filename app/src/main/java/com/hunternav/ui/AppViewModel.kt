@@ -214,7 +214,7 @@ class AppViewModel(
         }
         DebugLog.d(
             "DESTINATION_SELECTED",
-            "vm=$vmTag source=$source provider=nominatim title=${destination.title} subtitle=${destination.subtitle}",
+            "vm=$vmTag source=$source provider=${container.geocodingProviderTag} title=${destination.title} subtitle=${destination.subtitle}",
         )
         DebugLog.d(
             "DESTINATION_COORDINATES",
@@ -269,7 +269,7 @@ class AppViewModel(
         )
         DebugLog.d(
             "DESTINATION_SELECTED",
-            "vm=$vmTag source=map_long_press provider=nominatim title=${fallback.title}",
+            "vm=$vmTag source=map_long_press provider=${container.geocodingProviderTag} title=${fallback.title}",
         )
         DebugLog.d(
             "DESTINATION_COORDINATES",
