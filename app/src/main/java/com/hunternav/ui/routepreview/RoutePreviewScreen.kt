@@ -54,6 +54,7 @@ import kotlinx.coroutines.flow.combine
 @Composable
 fun RoutePreviewScreen(
     container: AppContainer,
+    onBack: () -> Unit,
     onChangeDestination: () -> Unit,
     onStartNavigation: () -> Unit,
 ) {
@@ -134,15 +135,16 @@ fun RoutePreviewScreen(
             }
         }
 
-        // Back button
+        // Back button — goes back (Home). It must not push another screen on top of the
+        // preview, or back presses loop Preview <-> Search forever.
         IconButton(
-            onClick = onChangeDestination,
+            onClick = onBack,
             modifier = Modifier
                 .statusBarsPadding()
                 .padding(16.dp)
                 .background(Color.White.copy(alpha = 0.95f), CircleShape),
         ) {
-            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Change destination")
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
         }
 
         // Route summary chip (floating over map)

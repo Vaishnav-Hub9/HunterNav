@@ -98,8 +98,16 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                         composable(Routes.ROUTE_PREVIEW) {
+                            // The top-left back arrow pops to Home — never navigates forward to
+                            // Search. (Pushing Search from here made back presses cycle
+                            // Preview <-> Search forever: an inescapable UI loop.) Picking a new
+                            // place is the explicit "Change destination" link's job.
                             RoutePreviewScreen(
                                 container = appContainer,
+                                onBack = {
+                                    DebugLog.d("SCREEN_TRANSITION", "back preview -> home")
+                                    navController.popBackStack(Routes.HOME, inclusive = false)
+                                },
                                 onChangeDestination = { navigateTo(Routes.SEARCH) },
                                 onStartNavigation = { navigateTo(Routes.NAVIGATION) },
                             )

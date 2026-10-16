@@ -26,6 +26,12 @@ firmware/include/wifi_config.h
 *.jks
 *.keystore
 
+# Legacy Mappls SDK auth files (pre-Google migration) — generated locally, dead weight,
+# and must never be swept into a commit by `git add -A`
+*.a.conf
+*.a.olf
+app/src/debug/assets/mappls-conf.txt
+
 # Packaged artifacts (build outputs are never committed)
 *.apk
 *.aab
